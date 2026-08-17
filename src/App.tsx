@@ -29,6 +29,7 @@ import {
   deleteUserAuthCredentials,
   subscribeToClassNotes,
   getLocalClassNotes,
+  areClassNotesEqual,
   getLocalStudents,
   saveClassNoteDoc,
   deleteClassNoteDoc,
@@ -448,7 +449,8 @@ export default function App() {
   // Subscribe to central class notes real-time updates
   useEffect(() => {
     const unsub = subscribeToClassNotes((updatedNotes) => {
-      setClassNotes(updatedNotes);
+      if (!updatedNotes || updatedNotes.length === 0) return;
+      setClassNotes((prev) => (areClassNotesEqual(prev, updatedNotes) ? prev : updatedNotes));
     });
     return () => {
       if (unsub) unsub();

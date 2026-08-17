@@ -1276,101 +1276,172 @@ export async function deleteAnnouncementDoc(id: string): Promise<void> {
 }
 
 // ----------------------------------------------------
-// CLASS NOTES CENTRALIZED STORAGE API
+// CLASS NOTES CENTRALIZED STORAGE API (STABLE & DEDUPLICATED)
 // ----------------------------------------------------
 const STORAGE_KEY_CLASS_NOTES = "tuition_class_notes";
 
 type ClassNotesListener = (notes: ClassNote[]) => void;
 const classNotesListeners = new Set<ClassNotesListener>();
 
+let inMemoryClassNotesCache: ClassNote[] | null = null;
+let activeFirestoreClassNotesUnsub: (() => void) | null = null;
+let isFirestoreClassNotesSubscribed = false;
+let isClassNotesFetchInProgress = false;
+
+/**
+ * Deep structural equality comparator for ClassNote arrays to prevent unnecessary UI re-renders
+ */
+export function areClassNotesEqual(
+  a: ClassNote[] | null | undefined,
+  b: ClassNote[] | null | undefined
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const na = a[i];
+    const nb = b[i];
+    if (
+      na.id !== nb.id ||
+      na.chapterNo !== nb.chapterNo ||
+      na.chapterName !== nb.chapterName ||
+      na.partLabel !== nb.partLabel ||
+      na.topicNo !== nb.topicNo ||
+      na.topicName !== nb.topicName ||
+      na.pdfUrl !== nb.pdfUrl ||
+      na.storagePath !== nb.storagePath ||
+      na.bucket !== nb.bucket ||
+      na.createdAt !== nb.createdAt ||
+      na.accessType !== nb.accessType ||
+      na.fileType !== nb.fileType ||
+      na.mimeType !== nb.mimeType ||
+      na.classGrade !== nb.classGrade ||
+      na.subject !== nb.subject ||
+      JSON.stringify(na.allowedStudentIds || []) !== JSON.stringify(nb.allowedStudentIds || []) ||
+      JSON.stringify(na.allowedClasses || []) !== JSON.stringify(nb.allowedClasses || [])
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function getLocalClassNotes(): ClassNote[] {
-  if (typeof window === "undefined") return [];
+  if (inMemoryClassNotesCache && inMemoryClassNotesCache.length > 0) {
+    return inMemoryClassNotesCache;
+  }
+  if (typeof window === "undefined") return inMemoryClassNotesCache || [];
   const cached = localStorage.getItem(STORAGE_KEY_CLASS_NOTES);
   if (cached) {
     try {
-      return JSON.parse(cached);
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed)) {
+        inMemoryClassNotesCache = parsed;
+        return parsed;
+      }
     } catch (e) {
       console.error("Failed to parse local class notes", e);
     }
   }
-  return [];
+  return inMemoryClassNotesCache || [];
 }
 
 export function saveLocalClassNotes(notes: ClassNote[]) {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined" || !Array.isArray(notes)) return;
+  
+  // Prevent duplicate state emissions if the dataset is unchanged
+  if (areClassNotesEqual(inMemoryClassNotesCache, notes)) {
+    return;
+  }
+
+  // Atomically update memory cache and persistent storage
+  inMemoryClassNotesCache = notes;
   safeSetStorage(STORAGE_KEY_CLASS_NOTES, JSON.stringify(notes));
-  classNotesListeners.forEach((listener) => listener(notes));
-  window.dispatchEvent(new Event("storage"));
+
+  // Notify all registered UI listeners with the stable reference
+  classNotesListeners.forEach((listener) => {
+    try {
+      listener(notes);
+    } catch (err) {
+      console.warn("[ClassNotesListener] callback warning:", err);
+    }
+  });
+}
+
+function ensureSingleFirestoreNotesSubscription() {
+  if (isFirestoreClassNotesSubscribed || isClassNotesFetchInProgress) return;
+  isClassNotesFetchInProgress = true;
+
+  (async () => {
+    try {
+      const db = await getFirebaseDb();
+      if (!db) {
+        isClassNotesFetchInProgress = false;
+        return;
+      }
+
+      const colRef = collection(db, "class_notes");
+      activeFirestoreClassNotesUnsub = onSnapshot(
+        colRef,
+        (snap) => {
+          isClassNotesFetchInProgress = false;
+          isFirestoreClassNotesSubscribed = true;
+          const remoteList: ClassNote[] = [];
+          snap.forEach((docSnap) => {
+            const data = docSnap.data() as ClassNote;
+            if (data && data.id) {
+              remoteList.push(data);
+            }
+          });
+
+          // NEVER clear existing notes on empty snapshot if we already have valid notes cached
+          const currentLocal = inMemoryClassNotesCache || getLocalClassNotes();
+          if (remoteList.length > 0) {
+            saveLocalClassNotes(remoteList);
+          } else if (currentLocal.length === 0 && !snap.metadata.hasPendingWrites) {
+            saveLocalClassNotes([]);
+          }
+        },
+        (err) => {
+          isClassNotesFetchInProgress = false;
+          console.warn("[Firestore] class_notes subscription notice (retaining existing notes):", err);
+        }
+      );
+      isFirestoreClassNotesSubscribed = true;
+    } catch (err) {
+      isClassNotesFetchInProgress = false;
+      console.warn("[Firestore] Failed setting up class_notes subscription:", err);
+    } finally {
+      isClassNotesFetchInProgress = false;
+    }
+  })();
 }
 
 export function subscribeToClassNotes(
   onUpdate: (notes: ClassNote[]) => void,
   onError?: (err: any) => void
 ): () => void {
-  let unsubscribeFirestore: (() => void) | null = null;
-  let active = true;
-
-  // Always register a local listener so saveLocalClassNotes immediately notifies subscribers
-  const localListener: ClassNotesListener = (updatedList) => {
-    if (active) onUpdate(updatedList);
-  };
-  classNotesListeners.add(localListener);
-
-  async function setup() {
-    // Initial emission from local storage
-    const initialLocal = getLocalClassNotes();
-    if (initialLocal.length > 0) {
-      onUpdate(initialLocal);
-    }
-
-    const db = await getFirebaseDb();
-    if (!active) return;
-
-    if (!db) {
-      if (initialLocal.length === 0) {
-        onUpdate(getLocalClassNotes());
-      }
-      return;
-    }
-
-    try {
-      const colRef = collection(db, "class_notes");
-      unsubscribeFirestore = onSnapshot(
-        colRef,
-        (snap) => {
-          if (!active) return;
-          const remoteList: ClassNote[] = [];
-          snap.forEach((docSnap) => {
-            remoteList.push(docSnap.data() as ClassNote);
-          });
-
-          if (remoteList.length > 0) {
-            saveLocalClassNotes(remoteList);
-          } else if (snap.metadata.hasPendingWrites) {
-            onUpdate(getLocalClassNotes());
-          } else {
-            saveLocalClassNotes([]);
-          }
-        },
-        (err) => {
-          console.error("Firestore class_notes snapshot error", err);
-          if (onError) onError(err);
-          onUpdate(getLocalClassNotes());
-        }
-      );
-    } catch (err) {
-      console.warn("Failed to subscribe to class_notes, using local fallback", err);
-      onUpdate(getLocalClassNotes());
-    }
+  // 1. Instantly emit cached notes if available (zero blank flicker)
+  const current = getLocalClassNotes();
+  if (current.length > 0) {
+    onUpdate(current);
   }
 
-  setup();
+  // 2. Register UI subscriber
+  classNotesListeners.add(onUpdate);
+
+  // 3. Ensure a single shared Firestore listener is active
+  ensureSingleFirestoreNotesSubscription();
 
   return () => {
-    active = false;
-    classNotesListeners.delete(localListener);
-    if (unsubscribeFirestore) {
-      unsubscribeFirestore();
+    classNotesListeners.delete(onUpdate);
+    // If no more listeners remain, keep in-memory cache but detach remote listener
+    if (classNotesListeners.size === 0 && activeFirestoreClassNotesUnsub) {
+      try {
+        activeFirestoreClassNotesUnsub();
+      } catch {}
+      activeFirestoreClassNotesUnsub = null;
+      isFirestoreClassNotesSubscribed = false;
     }
   };
 }

@@ -70,7 +70,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Student, ChapterNote } from "../types";
 import { ALL_ACADEMIC_MONTHS, MONTH_NAMES } from "../utils/monthHelper";
 import { groupAndSortChapterNotes, getFormattedTopicLabel, isFileNameRedundant } from "../utils/chapterNotesHelper";
-import { subscribeToAnnouncements, saveStudentDoc, subscribeToClassNotes, getLocalClassNotes, updateStudentPresence } from "../lib/firestoreService";
+import { subscribeToAnnouncements, saveStudentDoc, subscribeToClassNotes, getLocalClassNotes, areClassNotesEqual, updateStudentPresence } from "../lib/firestoreService";
 import { uploadReportToStorage, downloadFileFromStorage, getBucketName, sanitizeStoragePath } from "../lib/storageService";
 import PdfViewer from "./PdfViewer";
 import ConfirmDeleteModal from "./ConfirmDeleteModal";
@@ -1479,12 +1479,29 @@ export function StudentMyTab({
   const [allClassNotes, setAllClassNotes] = useState<ClassNote[]>(() => getLocalClassNotes());
 
   React.useEffect(() => {
-    setLocalStudent(student);
+    setLocalStudent((prev) => {
+      if (
+        prev.id === student.id &&
+        prev.classGrade === student.classGrade &&
+        prev.name === student.name &&
+        prev.serviceStatus === student.serviceStatus &&
+        prev.service_status === student.service_status &&
+        JSON.stringify(prev.enrolledSubjects || []) === JSON.stringify(student.enrolledSubjects || []) &&
+        JSON.stringify(prev.notes || {}) === JSON.stringify(student.notes || {}) &&
+        JSON.stringify(prev.chapterProgress || {}) === JSON.stringify(student.chapterProgress || {})
+      ) {
+        return prev;
+      }
+      return student;
+    });
   }, [student]);
 
   React.useEffect(() => {
     const unsub = subscribeToClassNotes((notes) => {
-      setAllClassNotes(notes);
+      if (!notes || notes.length === 0) {
+        return;
+      }
+      setAllClassNotes((prev) => (areClassNotesEqual(prev, notes) ? prev : notes));
     });
     return () => {
       if (unsub) unsub();
@@ -2440,7 +2457,10 @@ export default function StudentDashboard({
   const [testBankVersion, setTestBankVersion] = useState(0);
 
   useEffect(() => {
-    return subscribeToClassNotes((notes) => setAllClassNotes(notes));
+    return subscribeToClassNotes((notes) => {
+      if (!notes || notes.length === 0) return;
+      setAllClassNotes((prev) => (areClassNotesEqual(prev, notes) ? prev : notes));
+    });
   }, []);
 
   useEffect(() => {
