@@ -1661,14 +1661,23 @@ export function StudentMyTab({
       .filter((n) => n.subject.trim().toLowerCase() === selectedSubject.trim().toLowerCase())
       .map((cn) => ({
         id: cn.id,
+        classGrade: cn.classGrade,
+        subject: cn.subject,
         chapterNo: cn.chapterNo,
         chapterName: cn.chapterName,
         partLabel: cn.partLabel,
+        topicNo: cn.topicNo,
+        topicName: cn.topicName,
         pdfUrl: cn.pdfUrl,
         pdfFileName: cn.pdfFileName,
         storagePath: cn.storagePath,
         bucket: cn.bucket,
+        fileType: cn.fileType,
+        mimeType: cn.mimeType,
         createdAt: cn.createdAt,
+        accessType: cn.accessType,
+        allowedStudentIds: cn.allowedStudentIds,
+        allowedClasses: cn.allowedClasses,
       }));
 
     // Fallback: Also include any notes directly under student object if not already present
@@ -1736,11 +1745,11 @@ export function StudentMyTab({
         return;
       }
     }
-    if (!note.pdfUrl) return;
+    if (!note.pdfUrl && !note.storagePath) return;
 
     setOpeningNoteId(note.id);
 
-    let url = note.pdfUrl;
+    let url = note.pdfUrl || "";
     let storagePath = note.storagePath;
     let bucket = note.bucket;
     if (url.trim().startsWith("{")) {
@@ -1756,9 +1765,12 @@ export function StudentMyTab({
     if (localStudent?.id) {
       updateStudentPresence(localStudent.id);
     }
+    const topicFormatted = getFormattedTopicLabel(note);
+    const title = topicFormatted || `Chapter ${note.chapterNo} – ${note.chapterName}`;
+
     setActivePreviewPdf({
       url,
-      title: `Chapter ${note.chapterNo}: ${note.chapterName}`,
+      title,
       noteId: note.id,
       storagePath: storagePath || url,
       bucket: bucket,

@@ -367,8 +367,8 @@ export default function SubjectNotes({
       return;
     }
 
-    if (!note.pdfUrl) return;
-    let url = note.pdfUrl;
+    if (!note.pdfUrl && !note.storagePath) return;
+    let url = note.pdfUrl || "";
     let storagePath = note.storagePath;
     let bucket = note.bucket;
     if (url.trim().startsWith("{")) {
@@ -381,9 +381,12 @@ export default function SubjectNotes({
         // ignore
       }
     }
+    const topicFormatted = getFormattedTopicLabel(note);
+    const title = topicFormatted || `Chapter ${note.chapterNo} - ${note.chapterName}`;
+
     setActivePreviewPdf({
       url,
-      title: `Chapter ${note.chapterNo} - ${note.chapterName}`,
+      title,
       noteId: note.id,
       storagePath: storagePath || url,
       bucket: bucket,

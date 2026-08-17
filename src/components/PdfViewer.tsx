@@ -26,8 +26,8 @@ export default function PdfViewer({
   fileType
 }: PdfViewerProps) {
   const [status, setStatus] = useState<NoteViewerState>("downloading");
-  const [progress, setProgress] = useState(15);
-  const [statusText, setStatusText] = useState("Checking cache...");
+  const [progress, setProgress] = useState(20);
+  const [statusText, setStatusText] = useState("Preparing Note…");
   const [error, setError] = useState<string | null>(null);
   const [retryTrigger, setRetryTrigger] = useState(0);
 
@@ -61,8 +61,8 @@ export default function PdfViewer({
       if (!isMountedRef.current) return;
       setStatus("downloading");
       setError(null);
-      setProgress(15);
-      setStatusText("Checking cache...");
+      setProgress(20);
+      setStatusText("Preparing Note…");
 
       await openPdfWithNativeViewer({
         url,
@@ -99,7 +99,7 @@ export default function PdfViewer({
       console.error("[PdfViewer Modal] Error opening document:", err);
       if (!isMountedRef.current) return;
       setStatus("error");
-      setError(err?.message || "Unable to download notes. Please try again.");
+      setError("Unable to open this note. Please contact your teacher.");
     } finally {
       isExecutingRef.current = false;
     }
