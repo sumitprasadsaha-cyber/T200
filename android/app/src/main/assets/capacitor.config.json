@@ -1,0 +1,10 @@
+{
+	"appId": "com.academyconnect.app",
+	"appName": "Academy Connect",
+	"webDir": "dist",
+	"plugins": {
+		"ScreenOrientation": {
+			"orientation": "portrait"
+		}
+	}
+}

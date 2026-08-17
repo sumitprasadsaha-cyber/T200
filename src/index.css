@@ -1,0 +1,216 @@
+@import url('https://fonts.googleapis.com/css2?family=Dancing+Script:wght@400;700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --animate-fadeIn: fadeIn 0.2s ease-out;
+  --animate-slideUp: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-scaleUpCenter: scaleUpCenter 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes slideUp {
+    from { transform: translateY(12px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+
+  @keyframes scaleUpCenter {
+    from { transform: scale(0.9); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+
+  /* Map standard Tailwind blue and indigo color variables to our dynamic CSS variables */
+  --color-blue-50: var(--color-blue-light);
+  --color-blue-100: var(--color-blue-light);
+  --color-blue-500: var(--color-blue-primary);
+  --color-blue-600: var(--color-blue-primary);
+  --color-blue-700: var(--color-blue-hover);
+  --color-blue-800: var(--color-blue-hover);
+  --color-blue-900: var(--color-blue-hover);
+  --color-blue-950: var(--color-blue-light);
+
+  --color-indigo-50: var(--color-blue-light);
+  --color-indigo-100: var(--color-blue-light);
+  --color-indigo-500: var(--color-blue-primary);
+  --color-indigo-600: var(--color-blue-primary);
+  --color-indigo-700: var(--color-blue-hover);
+  --color-indigo-950: var(--color-blue-light);
+}
+
+/* Base Theme Config */
+:root {
+  --color-bg-primary: #f8fafc;
+  --color-bg-secondary: #ffffff;
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-muted: #94a3b8;
+  --color-border: #e2e8f0;
+  
+  --color-blue-primary: #2563eb;
+  --color-blue-hover: #1d4ed8;
+  --color-blue-light: #eff6ff;
+  --color-blue-gradient: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -4px rgba(0, 0, 0, 0.05);
+}
+
+/* Dark Mode override */
+.dark {
+  --color-bg-primary: #090d16;
+  --color-bg-secondary: #111827;
+  --color-text-primary: #f8fafc;
+  --color-text-secondary: #94a3b8;
+  --color-text-muted: #4b5563;
+  --color-border: #1f2937;
+  
+  --color-blue-primary: #3b82f6;
+  --color-blue-hover: #60a5fa;
+  --color-blue-light: #1e293b;
+  --color-blue-gradient: linear-gradient(135deg, #1d4ed8 0%, #0c0a0f 100%);
+  
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -4px rgba(0, 0, 0, 0.4);
+}
+
+/* Custom styles mapped to variables */
+html, body {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: auto;
+  touch-action: pan-y;
+  -webkit-tap-highlight-color: transparent;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+#root {
+  width: 100%;
+  min-height: 100%;
+  overflow-x: hidden;
+}
+
+/* --- Multicolour Premium Themes ---
+   Premium themes must NEVER replace the page background.
+   They only override the blue/indigo accent variables. */
+
+/* Sapphire (Blue Accent) */
+.theme-sapphire {
+  --color-blue-primary: #2563eb;
+  --color-blue-hover: #1d4ed8;
+  --color-blue-light: #eff6ff;
+}
+.dark.theme-sapphire, .dark .theme-sapphire {
+  --color-blue-primary: #38bdf8;
+  --color-blue-hover: #0ea5e9;
+  --color-blue-light: #0f172a;
+}
+
+/* Olive (Green Accent) */
+.theme-olive {
+  --color-blue-primary: #16a34a;
+  --color-blue-hover: #15803d;
+  --color-blue-light: #f0fdf4;
+}
+.dark.theme-olive, .dark .theme-olive {
+  --color-blue-primary: #4ade80;
+  --color-blue-hover: #22c55e;
+  --color-blue-light: #14532d;
+}
+
+/* Emerald (Teal-Green Accent) */
+.theme-emerald {
+  --color-blue-primary: #10b981;
+  --color-blue-hover: #059669;
+  --color-blue-light: #ecfdf5;
+}
+.dark.theme-emerald, .dark .theme-emerald {
+  --color-blue-primary: #34d399;
+  --color-blue-hover: #10b981;
+  --color-blue-light: #064e3b;
+}
+
+/* Ruby (Crimson Red Accent) */
+.theme-ruby {
+  --color-blue-primary: #dc2626;
+  --color-blue-hover: #b91c1c;
+  --color-blue-light: #fef2f2;
+}
+.dark.theme-ruby, .dark .theme-ruby {
+  --color-blue-primary: #f87171;
+  --color-blue-hover: #ef4444;
+  --color-blue-light: #450a0a;
+}
+
+/* Amber (Warm Accent) */
+.theme-amber {
+  --color-blue-primary: #d97706;
+  --color-blue-hover: #b45309;
+  --color-blue-light: #fffbeb;
+}
+.dark.theme-amber, .dark .theme-amber {
+  --color-blue-primary: #fbbf24;
+  --color-blue-hover: #f59e0b;
+  --color-blue-light: #451a03;
+}
+
+/* Legacy alias for older stored values */
+.theme-gold {
+  --color-blue-primary: #d97706;
+  --color-blue-hover: #b45309;
+  --color-blue-light: #fffbeb;
+}
+.dark.theme-gold, .dark .theme-gold {
+  --color-blue-primary: #fbbf24;
+  --color-blue-hover: #f59e0b;
+  --color-blue-light: #451a03;
+}
+
+/* White (Platinum/Grey Accent) */
+.theme-white {
+  --color-blue-primary: #475569;
+  --color-blue-hover: #334155;
+  --color-blue-light: #f1f5f9;
+}
+.dark.theme-white, .dark .theme-white {
+  --color-blue-primary: #94a3b8;
+  --color-blue-hover: #cbd5e1;
+  --color-blue-light: #1e293b;
+}
+
+#main-content-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+#main-content-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#main-content-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 9999px;
+}
+
+/* Animation utilities */
+.animate-fadeIn {
+  animation: var(--animate-fadeIn);
+}
+
+.animate-slideUp {
+  animation: var(--animate-slideUp);
+}
+

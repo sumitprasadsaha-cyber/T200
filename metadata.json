@@ -1,0 +1,6 @@
+{
+  "name": "Sumit Tuition App",
+  "description": "A clean and aesthetic tuition center management application to track students, attendance, subjects progress, fees, and notes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

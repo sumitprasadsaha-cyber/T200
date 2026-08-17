@@ -1,0 +1,54 @@
+{
+  "entities": {
+    "student": {
+      "title": "Student",
+      "description": "Student record with attendance, fee ledger, and syllabus progress details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "classGrade": { "type": "string" },
+        "phone": { "type": "string" },
+        "parentPhone": { "type": "string" },
+        "monthlyFee": { "type": "number" },
+        "feePaidThisMonth": { "type": "boolean" },
+        "registrationDate": { "type": "string" },
+        "feeMonths": { "type": "object" },
+        "feePaymentDates": { "type": "object" },
+        "feeMonthsList": { "type": "array" },
+        "enrolledSubjects": { "type": "array" },
+        "avatarUrl": { "type": "string" },
+        "avatarColor": { "type": "string" },
+        "notes": { "type": "object" },
+        "attendance": { "type": "object" }
+      },
+      "required": ["id", "name", "classGrade", "phone", "parentPhone", "monthlyFee"]
+    },
+    "user": {
+      "title": "User",
+      "description": "Authenticated user profile for Admin or Student role access",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "phone": { "type": "string" },
+        "role": { "type": "string", "enum": ["Admin", "Student"] },
+        "studentId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "lastLoginAt": { "type": "string" },
+        "status": { "type": "string", "enum": ["Active", "Inactive"] },
+        "name": { "type": "string" }
+      },
+      "required": ["uid", "phone", "role", "status"]
+    }
+  },
+  "firestore": {
+    "/students/{studentId}": {
+      "schema": "student",
+      "description": "Tuition student profiles, progress, and financial history"
+    },
+    "/users/{userId}": {
+      "schema": "user",
+      "description": "Role-based user records mapping auth identity to admin/student permissions"
+    }
+  }
+}

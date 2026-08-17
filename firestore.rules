@@ -1,0 +1,129 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // STANDALONE HELPERS
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             getUserData().role == "Admin";
+    }
+
+    function isStudent(studentId) {
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             getUserData().role == "Student" && 
+             getUserData().studentId == studentId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // ENTITY VALIDATIONS
+
+    function isValidUser(data) {
+      return data.uid is string && data.uid.size() <= 128 &&
+             (!('phone' in data) || data.phone == null || data.phone is string) &&
+             (!('role' in data) || data.role in ["Admin", "Student", "admin", "student"]) &&
+             (!('status' in data) || data.status in ["Active", "Inactive", "active", "inactive"]);
+    }
+
+    function isValidStudent(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.name is string && data.name.size() <= 128 &&
+             data.classGrade is string && data.classGrade.size() <= 32 &&
+             data.phone is string && data.phone.size() <= 20 &&
+             data.parentPhone is string && data.parentPhone.size() <= 20 &&
+             data.monthlyFee is number && data.monthlyFee >= 0;
+    }
+
+    // MATCH BLOCKS
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if isSignedIn() && 
+                    (request.auth.uid == userId && 
+                     isValidUser(request.resource.data) &&
+                     request.resource.data.uid == request.auth.uid);
+      allow update: if (isAdmin() && isValidUser(request.resource.data)) ||
+                      (isSignedIn() && 
+                       request.auth.uid == userId && 
+                       isValidUser(request.resource.data) &&
+                       request.resource.data.uid == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    match /students/{studentId} {
+      allow read: if isSignedIn() && (isAdmin() || isStudent(studentId));
+      allow create, delete: if isAdmin() && isValidStudent(request.resource.data);
+      allow update: if (isAdmin() && isValidStudent(request.resource.data)) ||
+                      (isStudent(studentId) && 
+                       isValidStudent(request.resource.data) &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['avatarUrl', 'avatarColor', 'lastActiveAt']));
+    }
+
+    // CLASS NOTES - Admin can CRUD, Students can read
+    match /class_notes/{noteId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // PRACTICE TESTS (from Supabase, synced to Firestore)
+    match /practice_tests/{testId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // STUDENT TEST ATTEMPTS - Students can create their own, read their own
+    // Admins can read all to generate reports
+    match /student_test_attempts/{attemptId} {
+      allow create: if isSignedIn() && (isAdmin() || request.auth.uid != null);
+      allow read: if isSignedIn() && (isAdmin() || request.auth.uid != null);
+      allow update, delete: if isAdmin();
+    }
+
+    // STUDENT TOPIC TEST SCORES - Summary of test performance by topic
+    // Students can read their own, admins can read all
+    match /student_topic_test_scores/{scoreId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn();
+      allow delete: if isAdmin();
+    }
+
+    // ANNOUNCEMENTS - Admin can manage, all can read
+    match /announcements/{announcementId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // SETTINGS - Admin can manage, all can read
+    match /settings/{document=**} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // REALTIME SYNC SIGNALS - For coordinating updates across devices
+    match /practice_tests_sync/{document=**} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /content_sync_signals/{document=**} {
+      allow read, write: if isSignedIn();
+    }
+  }
+}
+
