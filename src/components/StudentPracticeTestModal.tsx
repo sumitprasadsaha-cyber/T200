@@ -105,6 +105,7 @@ export default function StudentPracticeTestModal({
   }
   // Test State
   const [isLoading, setIsLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [questions, setQuestions] = useState<ParsedAssessmentQuestion[]>([]);
   const [testStage, setTestStage] = useState<"intro" | "active" | "result">("intro");
   const [currentQuestionIdx, setCurrentQuestionIdx] = useState(0);
@@ -137,19 +138,11 @@ export default function StudentPracticeTestModal({
 
     let isMounted = true;
     setIsLoading(true);
+    setFetchError(null);
     setQuestions([]);
 
     // Run simultaneous parallel fetch directly from Supabase
     const loadSimultaneously = async () => {
-      console.log(`[StudentPracticeTestModal] [FETCH_START] Requesting fresh Practice Test from Supabase:`, {
-        studentId,
-        classGrade,
-        subjectId: subject,
-        chapterId: chapterNo,
-        topicId: topicName,
-        testType
-      });
-
       try {
         const qListPromise = fetchQuestions(classGrade, subject, chapterNo, topicName, testType, { publishedOnly: true });
         const scorePromise = studentId 
@@ -161,34 +154,21 @@ export default function StudentPracticeTestModal({
 
         const [qList, studentScore] = await Promise.all([qListPromise, scorePromise]);
 
-        console.log(`[StudentPracticeTestModal] [FETCH_RESULT] Supabase response received:`, {
-          questionsLoaded: qList?.length || 0,
-          studentScoreFound: !!studentScore,
-          subjectId: subject,
-          chapterId: chapterNo,
-          topicId: topicName
-        });
-
         if (isMounted) {
+          setFetchError(null);
           if (Array.isArray(qList) && qList.length > 0) {
             setQuestions(qList);
           } else {
             setQuestions([]);
-            console.warn(`[StudentPracticeTestModal] [FETCH_EMPTY] Supabase returned 0 questions for Subject ID: "${subject}", Chapter ID: "${chapterNo}", Topic ID: "${topicName}". Reason: No matching records in DB or questions unpublished.`);
           }
           if (studentScore && testStageRef.current !== "result") {
             setLastAttemptRecord(studentScore);
           }
         }
       } catch (err: any) {
-        console.warn("[StudentPracticeTestModal] [FETCH_NOTICE] Notice loading test data:", {
-          topicId: topicName,
-          chapterId: chapterNo,
-          subjectId: subject,
-          classGrade,
-          databaseError: err?.message || err
-        });
+        console.warn("[StudentPracticeTestModal] Notice loading test data:", err?.message || err);
         if (isMounted) {
+          setFetchError("Unable to load Practice Test. Please try again.");
           setQuestions([]);
         }
       } finally {
@@ -420,9 +400,10 @@ export default function StudentPracticeTestModal({
               {isLoading ? (
                 <div className="py-8 flex flex-col items-center justify-center gap-3">
                   <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
-                  <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-                    Loading Practice Test from database...
-                  </p>
+                </div>
+              ) : fetchError ? (
+                <div className="p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl text-amber-800 dark:text-amber-300 text-xs font-semibold">
+                  Unable to load Practice Test. Please try again.
                 </div>
               ) : questions.length === 0 ? (
                 <div className="p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl text-amber-800 dark:text-amber-300 text-xs font-semibold">

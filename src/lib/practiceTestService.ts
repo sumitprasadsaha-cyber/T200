@@ -2053,14 +2053,41 @@ export async function getTopicPracticeTest(
   const testId = buildTopicTestId(classGrade, subject, chapterNo, topicName);
 
   try {
-    const { data, error } = await supabase
+    const chVariations = [
+      String(chapterNo),
+      String(Number(chapterNo) || chapterNo),
+      `ch${chapterNo}`,
+      `ch_${chapterNo}`,
+      `Chapter ${chapterNo}`,
+      `Chapter-${chapterNo}`
+    ];
+
+    let dbRows: any[] = [];
+
+    // Attempt 1: Fetch with chapter_id filter
+    const { data: chData, error: chErr } = await supabase
       .from("topic_assessment_questions")
       .select("id, class_id, subject_id, chapter_id, topic_id, question_type, question, options, correct_answer, published, order_index, raw_text, created_at, updated_at")
-      .eq("chapter_id", String(chapterNo))
+      .in("chapter_id", chVariations)
       .order("order_index", { ascending: true });
 
-    if (!error && Array.isArray(data) && data.length > 0) {
-      const matchingRows = data.filter((row) => {
+    if (!chErr && Array.isArray(chData) && chData.length > 0) {
+      dbRows = chData;
+    } else {
+      // Attempt 2: Direct scan from topic_assessment_questions (authoritative single source of truth)
+      const { data: allData, error: allErr } = await supabase
+        .from("topic_assessment_questions")
+        .select("id, class_id, subject_id, chapter_id, topic_id, question_type, question, options, correct_answer, published, order_index, raw_text, created_at, updated_at")
+        .order("order_index", { ascending: true })
+        .range(0, 9999);
+
+      if (!allErr && Array.isArray(allData)) {
+        dbRows = allData;
+      }
+    }
+
+    if (dbRows.length > 0) {
+      const matchingRows = dbRows.filter((row) => {
         return isExactTopicMatch(
           classGrade,
           subject,
@@ -2096,8 +2123,6 @@ export async function getTopicPracticeTest(
 
         return remoteTest;
       }
-    } else if (error) {
-      console.warn(`[PracticeTestService] Supabase query notice:`, error.message || error);
     }
   } catch (err: any) {
     console.warn("[PracticeTestService] Exception querying Supabase for practice test:", err?.message || err);
@@ -2398,18 +2423,43 @@ export async function getFullChapterQuestions(
   options: { publishedOnly?: boolean } = { publishedOnly: true }
 ): Promise<ParsedAssessmentQuestion[]> {
   try {
-    const { data, error } = await supabase
+    const chVariations = [
+      String(chapterNo),
+      String(Number(chapterNo) || chapterNo),
+      `ch${chapterNo}`,
+      `ch_${chapterNo}`,
+      `Chapter ${chapterNo}`,
+      `Chapter-${chapterNo}`
+    ];
+
+    let dbRows: any[] = [];
+
+    const { data: chData, error: chErr } = await supabase
       .from("topic_assessment_questions")
       .select("id, class_id, subject_id, chapter_id, topic_id, question_type, question, options, correct_answer, published, order_index, raw_text, created_at, updated_at")
-      .eq("chapter_id", String(chapterNo))
+      .in("chapter_id", chVariations)
       .order("order_index", { ascending: true });
 
-    if (!error && Array.isArray(data)) {
+    if (!chErr && Array.isArray(chData) && chData.length > 0) {
+      dbRows = chData;
+    } else {
+      const { data: allData, error: allErr } = await supabase
+        .from("topic_assessment_questions")
+        .select("id, class_id, subject_id, chapter_id, topic_id, question_type, question, options, correct_answer, published, order_index, raw_text, created_at, updated_at")
+        .order("order_index", { ascending: true })
+        .range(0, 9999);
+
+      if (!allErr && Array.isArray(allData)) {
+        dbRows = allData;
+      }
+    }
+
+    if (dbRows.length > 0) {
       const normClass = (classGrade || "").toLowerCase().replace(/[^a-z0-9]/g, "");
       const cleanNormClass = normClass.replace(/class/g, "");
       const normSubj = (subject || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
-      const matchingRows = data.filter((row) => {
+      const matchingRows = dbRows.filter((row) => {
         const rCh = typeof row.chapter_id === "number" ? row.chapter_id : (parseInt(String(row.chapter_id || "").replace(/\D/g, ""), 10) || Number(row.chapter_id) || 0);
         if (rCh > 0 && rCh !== Number(chapterNo)) return false;
 
