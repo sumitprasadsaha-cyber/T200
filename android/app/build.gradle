@@ -9,8 +9,8 @@ android {
         applicationId "com.academyconnect.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 23
-        versionName "4.2.21"
+        versionCode 24
+        versionName "4.2.22"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 

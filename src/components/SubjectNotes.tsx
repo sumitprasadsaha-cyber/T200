@@ -39,6 +39,7 @@ import AdminPracticeTestModal from "./AdminPracticeTestModal";
 import { getFullChapterQuestions, getTopicPracticeTestSync, deleteTopicPracticeTest, fetchAllPracticeTestsFromSupabase, getScoreButtonStyles } from "../lib/practiceTestService";
 import { getAllTestAttempts } from "../utils/assessmentParser";
 import { fetchStudentTestAttemptsFromSupabase } from "../lib/testScorePersistence";
+import { recordNoteOpenedOrDownloaded } from "../utils/chapterProgressHelper";
 
 export interface TopicTestStats {
   bestScore: number;
@@ -394,6 +395,10 @@ export default function SubjectNotes({
       mimeType: note.mimeType,
       fileType: note.fileType
     });
+
+    if (note.id && studentId) {
+      recordNoteOpenedOrDownloaded(studentId, subject, note.id);
+    }
   };
 
   const handlePdfUploadChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1530,6 +1535,8 @@ export default function SubjectNotes({
           fileName={activePreviewPdf.fileName}
           mimeType={activePreviewPdf.mimeType}
           fileType={activePreviewPdf.fileType}
+          studentId={studentId}
+          subject={subject}
           onClose={() => setActivePreviewPdf(null)}
         />
       )}

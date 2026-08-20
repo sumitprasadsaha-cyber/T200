@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { FileText, Image as ImageIcon, AlertTriangle, RefreshCw, X, CheckCircle2 } from "lucide-react";
 import { openPdfWithNativeViewer, isImageFile, NoteViewerState } from "../lib/nativePdfService";
+import { recordNoteOpenedOrDownloaded } from "../utils/chapterProgressHelper";
 
 interface PdfViewerProps {
   url: string;
@@ -12,6 +13,8 @@ interface PdfViewerProps {
   fileName?: string;
   mimeType?: string;
   fileType?: "pdf" | "image" | string;
+  studentId?: string;
+  subject?: string;
 }
 
 export default function PdfViewer({
@@ -23,7 +26,9 @@ export default function PdfViewer({
   bucket,
   fileName,
   mimeType,
-  fileType
+  fileType,
+  studentId,
+  subject
 }: PdfViewerProps) {
   const [status, setStatus] = useState<NoteViewerState>("downloading");
   const [progress, setProgress] = useState(20);
@@ -89,6 +94,11 @@ export default function PdfViewer({
       setStatus("opened");
       setProgress(100);
 
+      // Record note as opened/downloaded for progress tracking
+      if (noteId && studentId) {
+        recordNoteOpenedOrDownloaded(studentId, subject || "", noteId);
+      }
+
       // Auto dismiss modal overlay smoothly after viewer is launched
       closeTimerRef.current = setTimeout(() => {
         if (isMountedRef.current) {
@@ -103,7 +113,7 @@ export default function PdfViewer({
     } finally {
       isExecutingRef.current = false;
     }
-  }, [url, title, storagePath, bucket, noteId, fileName, mimeType, fileType]);
+  }, [url, title, storagePath, bucket, noteId, fileName, mimeType, fileType, studentId, subject]);
 
   useEffect(() => {
     if (hasLaunchedRef.current && retryTrigger === 0) return;

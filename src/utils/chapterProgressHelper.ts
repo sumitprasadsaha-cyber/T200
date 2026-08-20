@@ -731,9 +731,14 @@ export function calculateSubjectWeightedProgress(
         });
 
         if (attempts.length > 0) {
+          attempts.sort((a, b) => {
+            const timeA = a.timestamp || (a.date ? new Date(a.date).getTime() : 0);
+            const timeB = b.timestamp || (b.date ? new Date(b.date).getTime() : 0);
+            return timeB - timeA;
+          });
           chapterAttemptedTests++;
           attemptedTestsCount++;
-          // Get the latest attempt score percentage (attempts are ordered latest first)
+          // Get the latest attempt score percentage
           const latestAttempt = attempts[0];
           const latestScore =
             latestAttempt.percentage ??
