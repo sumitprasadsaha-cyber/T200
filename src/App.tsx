@@ -40,7 +40,8 @@ import {
   fetchStudentServiceStatus,
   getCachedAuthSession,
   saveCachedAuthSession,
-  clearCachedAuthSession
+  clearCachedAuthSession,
+  fetchFreshAdminDashboardData
 } from "./lib/firestoreService";
 import { migrateLegacyNotesToClassNotes } from "./utils/classNoteHelper";
 import { deleteFileFromStorage, uploadProfilePhoto } from "./lib/storageService";
@@ -421,6 +422,14 @@ export default function App() {
   };
 
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleRefreshAdminDashboard = async () => {
+    const freshData = await fetchFreshAdminDashboardData();
+    if (freshData && Array.isArray(freshData.students) && freshData.students.length > 0) {
+      setStudents(freshData.students);
+    }
+    return freshData;
+  };
 
   const handleManualRefresh = async () => {
     await progressService.runWithProgress({ label: "Refreshing Data…" }, async () => {
@@ -1428,9 +1437,7 @@ export default function App() {
           {activeTab === "Dashboard" && (
             <Dashboard
               students={students}
-              onRefresh={() => {
-                setStudents([...students]);
-              }}
+              onRefresh={handleRefreshAdminDashboard}
               onNavigateToStudents={handleNavigateToPendingStudents}
               onNavigateToStudentDetails={(id) => {
                 setSelectedStudentId(id);

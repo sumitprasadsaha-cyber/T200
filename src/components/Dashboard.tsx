@@ -36,7 +36,7 @@ import { progressService } from "../lib/progressService";
 
 interface DashboardProps {
   students: Student[];
-  onRefresh: () => void;
+  onRefresh: () => Promise<any> | any;
   onNavigateToStudents: () => void;
   onNavigateToStudentDetails: (studentId: string) => void;
   onToggleAttendance: (studentId: string, date: string, isPresent: boolean | "na") => void;
@@ -83,6 +83,7 @@ export default function Dashboard({
   }, []);
 
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [activePopupId, setActivePopupId] = useState<string | null>(null);
   const [popupSearch, setPopupSearch] = useState("");
   const [expandedClasses, setExpandedClasses] = useState<Record<string, boolean>>({});
@@ -128,22 +129,53 @@ export default function Dashboard({
     const unsub = subscribeToAnnouncements((list) => {
       setAnnouncements(list);
     });
+
+    const handleAnnouncementsUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      if (customEvent.detail && Array.isArray(customEvent.detail)) {
+        setAnnouncements(customEvent.detail);
+      } else {
+        try {
+          const cached = localStorage.getItem("tuition_announcements");
+          if (cached) setAnnouncements(JSON.parse(cached));
+        } catch {}
+      }
+    };
+
+    window.addEventListener("announcements-updated", handleAnnouncementsUpdate);
+
     return () => {
       unsub();
+      window.removeEventListener("announcements-updated", handleAnnouncementsUpdate);
     };
   }, []);
 
-  // Trigger rotation for refresh
-  const handleRefreshClick = () => {
-    progressService.runWithProgress({ label: "Refreshing Dashboard…" }, async () => {
-      setIsRefreshing(true);
-      try {
-        await onRefresh();
-        await new Promise((r) => setTimeout(r, 200));
-      } finally {
-        setIsRefreshing(false);
+  // Atomic database refresh handler
+  const handleRefreshClick = async () => {
+    if (isRefreshing) return; // Prevent duplicate clicks
+
+    setIsRefreshing(true);
+    setRefreshError(null);
+
+    try {
+      const freshResult = await onRefresh();
+      if (freshResult && typeof freshResult === "object") {
+        if (Array.isArray(freshResult.announcements)) {
+          setAnnouncements(freshResult.announcements);
+        }
+        if (freshResult.institutionName) {
+          setInstName(freshResult.institutionName);
+        }
       }
-    });
+    } catch (err) {
+      console.warn("[Dashboard] Refresh operation notice:", err);
+      setRefreshError("Unable to refresh. Please try again.");
+      setTimeout(() => {
+        setRefreshError(null);
+      }, 4000);
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   // Today's dynamic ISO date key (YYYY-MM-DD)
@@ -426,15 +458,26 @@ export default function Dashboard({
         </div>
         <button
           onClick={handleRefreshClick}
-          className="p-2 sm:p-2.5 bg-slate-50 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl border border-slate-200 dark:border-slate-700 transition-all focus:outline-hidden cursor-pointer"
+          disabled={isRefreshing}
+          className={`p-2 sm:p-2.5 bg-slate-50 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl border border-slate-200 dark:border-slate-700 transition-all focus:outline-hidden cursor-pointer ${
+            isRefreshing ? "opacity-70 cursor-not-allowed" : ""
+          }`}
           id="btn-refresh-dashboard"
-          title="Refresh statistics"
+          title={isRefreshing ? "Refreshing Dashboard..." : "Refresh statistics"}
         >
           <RefreshCw 
-            className={`w-4 h-4 transition-transform duration-500 ${isRefreshing ? "rotate-180" : ""}`} 
+            className={`w-4 h-4 transition-colors ${isRefreshing ? "animate-spin text-blue-600 dark:text-blue-400" : ""}`} 
           />
         </button>
       </div>
+
+      {/* User-friendly refresh error notice */}
+      {refreshError && (
+        <div className="flex items-center gap-2.5 p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 rounded-2xl text-xs font-bold text-amber-800 dark:text-amber-300 animate-fadeIn" id="dashboard-refresh-error">
+          <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+          <span>{refreshError}</span>
+        </div>
+      )}
 
       {/* 1. First Row: Total Students & Today's Attendance (50:50 width, same length) */}
       <div className="grid grid-cols-2 gap-3.5 sm:gap-4" id="dashboard-row-1">

@@ -78,7 +78,7 @@ import { getPdfDownloadUrl } from "../lib/pdfService";
 import { dataUrlToBlob } from "../utils/pdfUtils";
 import { supabase } from "../lib/supabaseClient";
 import ChapterProgressBottomSheet from "./ChapterProgressBottomSheet";
-import { getChapterProgressRecord, getStatusConfig, calculateSubjectProgress, calculateSubjectTestProgress, SubjectReportData, normalizeStatusLabel } from "../utils/chapterProgressHelper";
+import { getChapterProgressRecord, getStatusConfig, calculateSubjectProgress, calculateSubjectWeightedProgress, calculateSubjectTestProgress, SubjectReportData, normalizeStatusLabel } from "../utils/chapterProgressHelper";
 import SubjectReportModal from "./SubjectReportModal";
 import {
   getEvaluatedFeeStatus,
@@ -2476,6 +2476,7 @@ export default function StudentDashboard({
     if (typeof window !== "undefined") {
       window.addEventListener("practice-tests-updated", handleUpdate);
       window.addEventListener("test-attempts-updated", handleUpdate);
+      window.addEventListener("notes-progress-updated", handleUpdate);
       window.addEventListener("storage", handleUpdate);
     }
 
@@ -2483,6 +2484,7 @@ export default function StudentDashboard({
       if (typeof window !== "undefined") {
         window.removeEventListener("practice-tests-updated", handleUpdate);
         window.removeEventListener("test-attempts-updated", handleUpdate);
+        window.removeEventListener("notes-progress-updated", handleUpdate);
         window.removeEventListener("storage", handleUpdate);
       }
     };
@@ -2602,23 +2604,13 @@ export default function StudentDashboard({
     const allStudentAttempts = getAllTestAttempts();
     return student.enrolledSubjects
       .map((sub) => {
-        const testSummary = calculateSubjectTestProgress(sub, student, allClassNotes, allStudentAttempts, isAdmin);
-        const summary = calculateSubjectProgress(sub, student, allClassNotes, isAdmin);
-        const total = Math.max(summary.total, testSummary.totalChapters);
-        const completed = Math.max(
-          summary.completed,
-          testSummary.chapters.filter((c) => c.chapterProgress === 100).length
-        );
-        const rate = testSummary.totalTestsAttempted > 0
-          ? testSummary.overallSubjectPercentage
-          : summary.rate;
-
+        const weighted = calculateSubjectWeightedProgress(sub, student, allClassNotes, allStudentAttempts, isAdmin);
         return {
           name: sub,
-          total,
-          completed,
-          rate,
-          notes: summary.chapters.flatMap((c) => c.notes),
+          total: weighted.total,
+          completed: weighted.completed,
+          rate: weighted.rate,
+          notes: weighted.notes,
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));

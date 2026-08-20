@@ -2035,4 +2035,177 @@ export async function fetchStudentServiceStatus(
   return "active";
 }
 
+export interface FreshAdminDashboardData {
+  students: Student[];
+  announcements: any[];
+  institutionName: string;
+}
+
+/**
+ * Force fresh refetch of all Admin Dashboard data directly from database (Firestore & Supabase).
+ * Bypasses cached state, fetches resources in parallel, and updates local cache atomically.
+ */
+export async function fetchFreshAdminDashboardData(): Promise<FreshAdminDashboardData> {
+  const db = await getFirebaseDb();
+
+  // 1. Force network query for Students from Firestore & Supabase
+  const fetchStudentsTask = (async (): Promise<Student[]> => {
+    let firestoreList: Student[] = [];
+    if (db) {
+      try {
+        const colRef = collection(db, "students");
+        let snap;
+        try {
+          const { getDocsFromServer } = await import("firebase/firestore");
+          snap = await getDocsFromServer(colRef);
+        } catch {
+          snap = await getDocs(colRef);
+        }
+
+        snap.forEach((docSnap) => {
+          const data = docSnap.data() as Student;
+          if (
+            data &&
+            data.id &&
+            data.name &&
+            data.name.trim() !== "" &&
+            data.name.trim().toLowerCase() !== "unnamed student"
+          ) {
+            firestoreList.push(data);
+          }
+        });
+      } catch (err) {
+        console.warn("[Admin Dashboard Refresh] Firestore students query error:", err);
+      }
+    }
+
+    // Check Supabase students table to complement/merge latest fields
+    try {
+      const { supabase } = await import("./supabaseClient");
+      if (supabase) {
+        const { data: sbStudents, error } = await supabase.from("students").select("*");
+        if (!error && Array.isArray(sbStudents) && sbStudents.length > 0) {
+          const sbMap = new Map<string, any>();
+          sbStudents.forEach((st) => {
+            if (st.id) sbMap.set(st.id, st);
+          });
+
+          // Merge any service_status or updated fields from Supabase
+          if (firestoreList.length > 0) {
+            firestoreList = firestoreList.map((fsStudent) => {
+              const sbMatch = sbMap.get(fsStudent.id);
+              if (sbMatch && sbMatch.service_status) {
+                return {
+                  ...fsStudent,
+                  serviceStatus: sbMatch.service_status,
+                  service_status: sbMatch.service_status,
+                };
+              }
+              return fsStudent;
+            });
+          }
+        }
+      }
+    } catch (sbErr) {
+      console.warn("[Admin Dashboard Refresh] Supabase students fetch warning:", sbErr);
+    }
+
+    if (firestoreList.length > 0) {
+      return firestoreList;
+    }
+    return getLocalStudents();
+  })();
+
+  // 2. Force network query for Announcements
+  const fetchAnnouncementsTask = (async (): Promise<any[]> => {
+    if (db) {
+      try {
+        const colRef = collection(db, "announcements");
+        let snap;
+        try {
+          const { getDocsFromServer } = await import("firebase/firestore");
+          snap = await getDocsFromServer(colRef);
+        } catch {
+          snap = await getDocs(colRef);
+        }
+
+        const list: any[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data();
+          if (d) list.push(d);
+        });
+
+        list.sort((a, b) => {
+          const dateA = a.date || "";
+          const dateB = b.date || "";
+          if (dateA !== dateB) return dateB.localeCompare(dateA);
+          return (b.id || "").localeCompare(a.id || "");
+        });
+
+        return list;
+      } catch (err) {
+        console.warn("[Admin Dashboard Refresh] Firestore announcements query error:", err);
+      }
+    }
+
+    try {
+      const cached = localStorage.getItem("tuition_announcements");
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  })();
+
+  // 3. Force network query for Institution Name
+  const fetchInstitutionNameTask = (async (): Promise<string> => {
+    if (db) {
+      try {
+        const docRef = doc(db, "settings", "institution");
+        let snap;
+        try {
+          const { getDocFromServer } = await import("firebase/firestore");
+          snap = await getDocFromServer(docRef);
+        } catch {
+          snap = await getDoc(docRef);
+        }
+        if (snap.exists()) {
+          const name = snap.data().name || "Sumit Tuition App";
+          return name;
+        }
+      } catch (err) {
+        console.warn("[Admin Dashboard Refresh] Institution settings query error:", err);
+      }
+    }
+    return getCachedInstitutionName();
+  })();
+
+  // Execute all network requests in parallel
+  const [freshStudents, freshAnnouncements, freshInstName] = await Promise.all([
+    fetchStudentsTask,
+    fetchAnnouncementsTask,
+    fetchInstitutionNameTask,
+  ]);
+
+  // Atomically update local caches and broadcast updates to listening components
+  if (freshStudents.length > 0) {
+    saveLocalStudents(freshStudents);
+  }
+  if (Array.isArray(freshAnnouncements)) {
+    safeSetStorage("tuition_announcements", JSON.stringify(freshAnnouncements));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("announcements-updated", { detail: freshAnnouncements }));
+      window.dispatchEvent(new Event("storage"));
+    }
+  }
+  if (freshInstName) {
+    setCachedInstitutionName(freshInstName);
+  }
+
+  return {
+    students: freshStudents.length > 0 ? freshStudents : getLocalStudents(),
+    announcements: freshAnnouncements,
+    institutionName: freshInstName || getCachedInstitutionName(),
+  };
+}
+
 
