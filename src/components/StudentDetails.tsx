@@ -38,6 +38,7 @@ import { getUnpaidOverdueMonths, MONTH_NAMES, isFutureMonth, hasAttendedInMonth 
 import ConfirmDeleteModal from "./ConfirmDeleteModal";
 import { getMonthsUpToCurrent, ALL_ACADEMIC_MONTHS } from "../utils/monthHelper";
 import { getChapterProgressRecord, getStatusConfig, calculateSubjectProgress } from "../utils/chapterProgressHelper";
+import { getStudentSubjects } from "../utils/classNoteHelper";
 import {
   getEvaluatedFeeStatus,
   getPendingFeeMonths,
@@ -213,10 +214,21 @@ export default function StudentDetails({
     }
   };
   
+  // Alphabetically sorted enrolled subjects (from enrollment, notes and class notes)
+  const sortedEnrolledSubjects = useMemo(() => {
+    return getStudentSubjects(student, allClassNotes);
+  }, [student, allClassNotes]);
+
   // Selected progress subject (default is the first enrolled subject)
   const [selectedProgressSubject, setSelectedProgressSubject] = useState<string>(() => {
     return student.enrolledSubjects[0] || "";
   });
+
+  useEffect(() => {
+    if (!selectedProgressSubject && sortedEnrolledSubjects.length > 0) {
+      setSelectedProgressSubject(sortedEnrolledSubjects[0]);
+    }
+  }, [sortedEnrolledSubjects, selectedProgressSubject]);
 
   // State for remark input focus
   const [editingRemarkNoteId, setEditingRemarkNoteId] = useState<string | null>(null);
@@ -389,11 +401,6 @@ export default function StudentDetails({
     const rate = total > 0 ? Math.round((presents / total) * 100) : 0;
     return { total, presents, rate };
   }, [student.attendance]);
-
-  // Alphabetically sorted enrolled subjects
-  const sortedEnrolledSubjects = useMemo(() => {
-    return [...student.enrolledSubjects].sort((a, b) => a.localeCompare(b));
-  }, [student.enrolledSubjects]);
 
   // Calculate detailed chapters list derived from central classNotes, student.notes & chapterProgress
   const activeChaptersList = useMemo(() => {

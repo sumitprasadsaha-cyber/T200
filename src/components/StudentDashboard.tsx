@@ -89,7 +89,7 @@ import {
 import { ChapterProgressData, ClassNote } from "../types";
 import { FileCheck } from "lucide-react";
 import { filterNotesForStudent, filterSubjectsForStudent } from "../utils/noteAccessHelper";
-import { filterClassNotesForStudent } from "../utils/classNoteHelper";
+import { filterClassNotesForStudent, getStudentSubjects, isSubjectMatching } from "../utils/classNoteHelper";
 import StudentPracticeTestModal from "./StudentPracticeTestModal";
 import { getTopicPracticeTest, getStudentTestAttempts, getAllTestAttempts, fetchAllPracticeTestsFromSupabase } from "../utils/assessmentParser";
 import { getScoreButtonStyles } from "../lib/practiceTestService";
@@ -1508,8 +1508,12 @@ export function StudentMyTab({
     };
   }, []);
 
+  const sortedSubjects = useMemo(() => {
+    return getStudentSubjects(localStudent, allClassNotes);
+  }, [localStudent, allClassNotes]);
+
   const [selectedSubject, setSelectedSubject] = useState<string | null>(() => {
-    return initialSubject || localStudent.enrolledSubjects[0] || null;
+    return initialSubject || getStudentSubjects(localStudent, allClassNotes)[0] || null;
   });
   const [editingRemarkId, setEditingRemarkId] = useState<string | null>(null);
   const [remarkDrafts, setRemarkDrafts] = useState<Record<string, string>>({});
@@ -1646,8 +1650,10 @@ export function StudentMyTab({
   React.useEffect(() => {
     if (initialSubject) {
       setSelectedSubject(initialSubject);
+    } else if (!selectedSubject && sortedSubjects.length > 0) {
+      setSelectedSubject(sortedSubjects[0]);
     }
-  }, [initialSubject]);
+  }, [initialSubject, sortedSubjects]);
 
   const handleSelectSubject = (subject: string) => {
     setSelectedSubject(subject);
@@ -1675,7 +1681,7 @@ export function StudentMyTab({
     if (!selectedSubject) return [] as ChapterNote[];
 
     const fromClassNotes: ChapterNote[] = studentClassNotes
-      .filter((n) => n.subject.trim().toLowerCase() === selectedSubject.trim().toLowerCase())
+      .filter((n) => isSubjectMatching(n.subject, selectedSubject))
       .map((cn) => ({
         id: cn.id,
         classGrade: cn.classGrade,
@@ -1698,7 +1704,14 @@ export function StudentMyTab({
       }));
 
     // Fallback: Also include any notes directly under student object if not already present
-    const legacyRaw = ((localStudent.notes?.[selectedSubject] || []) as ChapterNote[]);
+    let legacyRaw: ChapterNote[] = [];
+    if (localStudent.notes) {
+      for (const [k, v] of Object.entries(localStudent.notes)) {
+        if (isSubjectMatching(k, selectedSubject) && Array.isArray(v)) {
+          legacyRaw = [...legacyRaw, ...v];
+        }
+      }
+    }
     const legacyFiltered = filterNotesForStudent(legacyRaw, localStudent.id, isAdmin);
 
     const combined = [...fromClassNotes];
@@ -1728,17 +1741,6 @@ export function StudentMyTab({
 
     return groupAndSortChapterNotes(filtered);
   }, [selectedSubject, selectedNotes, noteSearchQuery]);
-
-  const sortedSubjects = useMemo(() => {
-    const enrolled = localStudent.enrolledSubjects || [];
-    const subjectsSet = new Set<string>();
-    enrolled.forEach((sub) => {
-      if (sub && sub.trim()) {
-        subjectsSet.add(sub.trim());
-      }
-    });
-    return Array.from(subjectsSet).sort((a, b) => a.localeCompare(b));
-  }, [localStudent.enrolledSubjects]);
 
   const handleSaveRemark = (note: ChapterNote) => {
     const draft = (remarkDrafts[note.id] ?? note.remark ?? "").trim();
@@ -2033,7 +2035,7 @@ export function StudentMyTab({
                       const note = chapterNotes[0];
                       const topicName = getFormattedTopicLabel(note) || `Topic ${group.chapterNo}`;
                       const topicTest = getTopicPracticeTest(
-                        localStudent.classGrade || note.classGrade || "Class 10",
+                        localStudent.classGrade || note.classGrade || "",
                         selectedSubject || note.subject || "",
                         group.chapterNo,
                         topicName
@@ -2093,7 +2095,7 @@ export function StudentMyTab({
 
                             <div className="flex items-center gap-2 shrink-0 ml-auto" onClick={(e) => e.stopPropagation()}>
                               {hasTest && (() => {
-                                const studentClass = localStudent.classGrade || note.classGrade || "Class 10";
+                                const studentClass = localStudent.classGrade || note.classGrade || "";
                                 const studentSubj = selectedSubject || note.subject || "";
                                 const allAttempts = getStudentTestAttempts(localStudent.id || localStudent.name || "");
                                 const normTopic = (topicName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -2228,7 +2230,7 @@ export function StudentMyTab({
                             {group.notes.map((note) => {
                               const topicName = getFormattedTopicLabel(note) || `Topic ${group.chapterNo}`;
                               const topicTest = getTopicPracticeTest(
-                                localStudent.classGrade || note.classGrade || "Class 10",
+                                localStudent.classGrade || note.classGrade || "",
                                 selectedSubject || note.subject || "",
                                 group.chapterNo,
                                 topicName
@@ -2274,7 +2276,7 @@ export function StudentMyTab({
 
                                   <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
                                     {hasTest && (() => {
-                                      const studentClass = localStudent.classGrade || note.classGrade || "Class 10";
+                                      const studentClass = localStudent.classGrade || note.classGrade || "";
                                       const studentSubj = selectedSubject || note.subject || "";
                                       const allAttempts = getStudentTestAttempts(localStudent.id || localStudent.name || "");
                                       const normTopic = (topicName || "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -2600,9 +2602,13 @@ export default function StudentDashboard({
     return { presents, total, rate };
   }, [student.attendance]);
 
+  const studentSubjects = useMemo(() => {
+    return getStudentSubjects(student, allClassNotes);
+  }, [student, allClassNotes]);
+
   const subjectProgress = useMemo(() => {
     const allStudentAttempts = getAllTestAttempts();
-    return student.enrolledSubjects
+    return studentSubjects
       .map((sub) => {
         const weighted = calculateSubjectWeightedProgress(sub, student, allClassNotes, allStudentAttempts, isAdmin);
         return {
@@ -2614,7 +2620,7 @@ export default function StudentDashboard({
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [student.enrolledSubjects, student, allClassNotes, isAdmin, testBankVersion]);
+  }, [studentSubjects, student, allClassNotes, isAdmin, testBankVersion]);
 
   const recentAttendance = useMemo(() => {
     const dates = ["2026-07-14", "2026-07-13", "2026-07-12", "2026-07-11", "2026-07-10", "2026-07-09", "2026-07-08"];

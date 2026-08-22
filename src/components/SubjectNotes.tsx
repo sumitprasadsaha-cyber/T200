@@ -689,7 +689,7 @@ export default function SubjectNotes({
                         {(() => {
                           const topicLabel = getFormattedTopicLabel(note) || `Topic ${group.chapterNo}`;
                           const matchedStud = students.find((s) => s.id === studentId || s.name === studentName);
-                          const noteClass = note.classGrade || classGrade || matchedStud?.classGrade || "Class 10";
+                          const noteClass = note.classGrade || classGrade || matchedStud?.classGrade || "";
                           const noteSubj = note.subject || subject;
                           const topicTest = getTopicPracticeTestSync(noteClass, noteSubj, group.chapterNo, topicLabel);
                           const hasTest = !!(topicTest && topicTest.questions && topicTest.questions.length > 0);
@@ -849,7 +849,7 @@ export default function SubjectNotes({
                         {/* Full Chapter Test Button & Score */}
                         {(() => {
                           const firstNote = group.notes[0];
-                          const noteClass = firstNote?.classGrade || "Class 10";
+                          const noteClass = firstNote?.classGrade || "";
                           const studentIdentifier = studentId || studentName;
                           const allAttempts = getAllTestAttempts();
                           const chAttempts = allAttempts.filter((a) => {
@@ -976,7 +976,7 @@ export default function SubjectNotes({
                               {(() => {
                                 const topicLabel = getFormattedTopicLabel(note) || `Topic ${group.chapterNo}`;
                                 const matchedStud = students.find((s) => s.id === studentId || s.name === studentName);
-                                const noteClass = note.classGrade || classGrade || matchedStud?.classGrade || "Class 10";
+                                const noteClass = note.classGrade || classGrade || matchedStud?.classGrade || "";
                                 const noteSubj = note.subject || subject;
                                 const topicTest = getTopicPracticeTestSync(noteClass, noteSubj, group.chapterNo, topicLabel);
                                 const hasTest = !!(topicTest && topicTest.questions && topicTest.questions.length > 0);

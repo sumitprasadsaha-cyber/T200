@@ -3,7 +3,7 @@ import { ClassNote, Student, ChapterNote } from "../types";
 export function normalizeClassGrade(grade?: string): string {
   if (!grade) return "";
   const trimmed = grade.trim();
-  if (/^upsc$/i.test(trimmed) || /^class\s+upsc$/i.test(trimmed)) {
+  if (/^upsc$/i.test(trimmed) || /^class\s+upsc$/i.test(trimmed) || /upsc/i.test(trimmed)) {
     return "UPSC";
   }
   const match = trimmed.match(/\d+/);
@@ -37,7 +37,55 @@ export function isSubjectMatching(subA?: string, subB?: string): boolean {
   const b = subB.trim().toLowerCase();
   if (a === b) return true;
 
-  // Common subject aliases and normalizations
+  // Universal match for "all" or "all subjects"
+  if (a === "all" || a === "all subjects" || b === "all" || b === "all subjects") return true;
+
+  // UPSC specific subject normalizations & aliases
+  const isGsA = a === "gs" || a === "general studies" || a.startsWith("gs ") || a.startsWith("gs-") || a.startsWith("general studies");
+  const isGsB = b === "gs" || b === "general studies" || b.startsWith("gs ") || b.startsWith("gs-") || b.startsWith("general studies");
+  if (isGsA && isGsB) return true;
+
+  const isPolityA = a === "polity" || a === "political science" || a === "polity & governance" || a === "polity and governance" || a === "indian polity" || a === "governance" || a === "constitution";
+  const isPolityB = b === "polity" || b === "political science" || b === "polity & governance" || b === "polity and governance" || b === "indian polity" || b === "governance" || b === "constitution";
+  if (isPolityA && isPolityB) return true;
+
+  const isEconA = a === "economics" || a === "economy" || a === "indian economy" || a === "eco";
+  const isEconB = b === "economics" || b === "economy" || b === "indian economy" || b === "eco";
+  if (isEconA && isEconB) return true;
+
+  const isHistA = a === "history" || a === "indian history" || a === "ancient history" || a === "medieval history" || a === "modern history" || a === "art & culture" || a === "art and culture" || a === "hist";
+  const isHistB = b === "history" || b === "indian history" || b === "ancient history" || b === "medieval history" || b === "modern history" || b === "art & culture" || b === "art and culture" || b === "hist";
+  if (isHistA && isHistB) return true;
+
+  const isGeoA = a === "geography" || a === "physical geography" || a === "indian geography" || a === "world geography" || a === "geo";
+  const isGeoB = b === "geography" || b === "physical geography" || b === "indian geography" || b === "world geography" || b === "geo";
+  if (isGeoA && isGeoB) return true;
+
+  const isEnvA = a === "environment" || a === "ecology" || a === "environment & ecology" || a === "environment and ecology" || a === "env";
+  const isEnvB = b === "environment" || b === "ecology" || b === "environment & ecology" || b === "environment and ecology" || b === "env";
+  if (isEnvA && isEnvB) return true;
+
+  const isSciTechA = a === "science & technology" || a === "science and technology" || a === "science & tech" || a === "sci & tech" || a === "s&t";
+  const isSciTechB = b === "science & technology" || b === "science and technology" || b === "science & tech" || b === "sci & tech" || b === "s&t";
+  if (isSciTechA && isSciTechB) return true;
+
+  const isIrA = a === "international relations" || a === "ir" || a === "international affairs";
+  const isIrB = b === "international relations" || b === "ir" || b === "international affairs";
+  if (isIrA && isIrB) return true;
+
+  const isEthicsA = a === "ethics" || a === "ethics & integrity" || a === "ethics, integrity & aptitude" || a === "ethics and integrity" || a === "gs 4" || a === "gs-4";
+  const isEthicsB = b === "ethics" || b === "ethics & integrity" || b === "ethics, integrity & aptitude" || b === "ethics and integrity" || b === "gs 4" || b === "gs-4";
+  if (isEthicsA && isEthicsB) return true;
+
+  const isCaA = a === "current affairs" || a === "current issues" || a === "daily current affairs" || a === "ca";
+  const isCaB = b === "current affairs" || b === "current issues" || b === "daily current affairs" || b === "ca";
+  if (isCaA && isCaB) return true;
+
+  const isCsatA = a === "csat" || a === "aptitude" || a === "general mental ability" || a === "paper 2";
+  const isCsatB = b === "csat" || b === "aptitude" || b === "general mental ability" || b === "paper 2";
+  if (isCsatA && isCsatB) return true;
+
+  // General academic subject aliases
   const isMathA = a === "math" || a === "maths" || a === "mathematics";
   const isMathB = b === "math" || b === "maths" || b === "mathematics";
   if (isMathA && isMathB) return true;
@@ -76,8 +124,8 @@ export function isSubjectMatching(subA?: string, subB?: string): boolean {
 /**
  * Filter centralized ClassNote items for a given student.
  * Must match:
- * 1. Student's ClassGrade
- * 2. Student's EnrolledSubjects
+ * 1. Student's ClassGrade (Class 1–12, UPSC)
+ * 2. Student's EnrolledSubjects or Student's Class-level subject notes
  */
 export function filterClassNotesForStudent(
   classNotes: ClassNote[],
@@ -85,6 +133,7 @@ export function filterClassNotesForStudent(
 ): ClassNote[] {
   if (!student || !Array.isArray(classNotes)) return [];
   const studentGrade = student.classGrade || "";
+  const isUpscStudent = isClassGradeMatching(studentGrade, "UPSC");
   const enrolledSubjects = (student.enrolledSubjects || []).map((s) => s.trim().toLowerCase());
   const hasEnrolledList = Array.isArray(student.enrolledSubjects) && student.enrolledSubjects.length > 0;
 
@@ -107,13 +156,106 @@ export function filterClassNotesForStudent(
 
     if (!classMatches) return false;
 
-    // 2. Check subject match: MUST be in student's enrolledSubjects list
-    const noteSubj = (note.subject || "").trim();
+    // 2. Check student explicit access restriction if specified
+    if (note.accessType === "selected" && Array.isArray(note.allowedStudentIds)) {
+      if (!note.allowedStudentIds.includes(student.id)) return false;
+    }
+
+    // 3. Check subject match:
+    // If student has no specific enrolled subject restriction, all notes for their class are accessible
     if (!hasEnrolledList) return true;
+    
+    // If student is registered as UPSC and has general "UPSC" or "All" or "General Studies" enrolled, grant access to all UPSC notes
+    if (isUpscStudent && (enrolledSubjects.includes("upsc") || enrolledSubjects.includes("all") || enrolledSubjects.includes("all subjects") || enrolledSubjects.includes("general studies"))) {
+      return true;
+    }
+
+    const noteSubj = (note.subject || "").trim();
     const subjectMatches = enrolledSubjects.some((s) => isSubjectMatching(s, noteSubj));
 
     return subjectMatches;
   });
+}
+
+/**
+ * Returns all subjects assigned to or available for a student,
+ * combining enrolledSubjects, subjects with uploaded notes for their class, and legacy notes.
+ */
+export function getStudentSubjects(student: Student, allClassNotes: ClassNote[] = []): string[] {
+  if (!student) return [];
+  const subjectsSet = new Set<string>();
+
+  // 1. Add student's explicitly enrolled subjects
+  if (Array.isArray(student.enrolledSubjects)) {
+    student.enrolledSubjects.forEach((sub) => {
+      if (sub && sub.trim()) {
+        subjectsSet.add(sub.trim());
+      }
+    });
+  }
+
+  // 2. Add subjects from legacy student.notes
+  if (student.notes && typeof student.notes === "object") {
+    Object.keys(student.notes).forEach((sub) => {
+      if (sub && sub.trim()) {
+        subjectsSet.add(sub.trim());
+      }
+    });
+  }
+
+  // 3. Add subjects from central class notes that match student's classGrade or are accessible to student
+  if (Array.isArray(allClassNotes)) {
+    const studentGrade = student.classGrade || "";
+    allClassNotes.forEach((note) => {
+      if (!note || !note.subject || !note.subject.trim()) return;
+
+      let classMatches = false;
+      const isExplicitlyShared = Array.isArray(note.allowedClasses) && note.allowedClasses.length > 0;
+      if (isExplicitlyShared) {
+        classMatches = note.allowedClasses!.some((c) => isClassGradeMatching(c, studentGrade));
+      } else if (note.accessType === "selected" && Array.isArray(note.allowedStudentIds)) {
+        classMatches = note.allowedStudentIds.includes(student.id);
+      } else {
+        classMatches = isClassGradeMatching(note.classGrade, studentGrade);
+      }
+
+      if (classMatches) {
+        subjectsSet.add(note.subject.trim());
+      }
+    });
+  }
+
+  // 4. Default subjects if empty based on class
+  if (subjectsSet.size === 0) {
+    const norm = normalizeClassGrade(student.classGrade);
+    if (norm === "UPSC") {
+      return [
+        "General Studies",
+        "History",
+        "Geography",
+        "Polity & Governance",
+        "Economics",
+        "Environment & Ecology",
+        "Science & Technology",
+        "International Relations",
+        "Ethics",
+        "Current Affairs"
+      ];
+    }
+  }
+
+  // If student only has umbrella "UPSC" enrolled, expand to any UPSC subjects available from notes
+  if (subjectsSet.has("UPSC")) {
+    const upscNotesSubjects = (allClassNotes || [])
+      .filter((n) => isClassGradeMatching(n.classGrade, "UPSC"))
+      .map((n) => n.subject.trim());
+    if (upscNotesSubjects.length > 0) {
+      upscNotesSubjects.forEach((s) => subjectsSet.add(s));
+      subjectsSet.delete("UPSC");
+    }
+  }
+
+  return Array.from(subjectsSet).sort((a, b) => a.localeCompare(b));
 }
 
 export interface GroupedChapterParts {
@@ -247,7 +389,7 @@ export function migrateLegacyNotesToClassNotes(
   let addedCount = 0;
 
   for (const student of students) {
-    const studentClass = normalizeClassGrade(student.classGrade || "Class 10");
+    const studentClass = normalizeClassGrade(student.classGrade);
     if (!student.notes) continue;
 
     for (const [subject, chapterNotes] of Object.entries(student.notes)) {

@@ -700,7 +700,7 @@ export function calculateSubjectWeightedProgress(
 
       // Check practice test for this topic
       const test = getTopicPracticeTest(
-        student?.classGrade || n.classGrade || "Class 10",
+        student?.classGrade || n.classGrade || "",
         subject || n.subject || "",
         group.chapterNo,
         topicLabel
