@@ -1050,42 +1050,46 @@ export default function App() {
     subject: string,
     noteId: string
   ) => {
+    // Locate note in classNotes or student.notes
     const targetStudent = students.find((s) => s.id === studentId);
-    if (!targetStudent) {
-      console.error(`[Delete Note Flow] Student with ID "${studentId}" not found.`);
-      throw new Error("Student record not found.");
-    }
+    const targetClassNote =
+      classNotes.find((n) => n.id === noteId) ||
+      getLocalClassNotes().find((n) => n.id === noteId);
+    const legacyNote = targetStudent?.notes?.[subject]?.find((n) => n.id === noteId);
 
-    const subjectNotes = targetStudent.notes?.[subject] || [];
-    const noteToDelete = subjectNotes.find((n) => n.id === noteId);
-    if (!noteToDelete) {
-      console.warn(`[Delete Note Flow] Chapter note ID "${noteId}" not found in subject "${subject}".`);
-      return;
-    }
+    const bucket = targetClassNote?.bucket || legacyNote?.bucket || "academy-connect-files";
+    const rawStoragePath =
+      targetClassNote?.storagePath ||
+      legacyNote?.storagePath ||
+      targetClassNote?.pdfUrl ||
+      legacyNote?.pdfUrl ||
+      "";
 
-    const bucket = noteToDelete.bucket || "academy-connect-files";
-    const rawStoragePath = noteToDelete.storagePath || noteToDelete.pdfUrl || noteToDelete.downloadUrl || "";
+    console.log(`[Delete Note Flow] Initiating note deletion process: noteId="${noteId}", studentId="${studentId}", subject="${subject}"`);
 
-    console.log(`[Delete Note Flow] Initiating chapter note deletion process:`);
-    console.log(`[Delete Note Flow] - Student ID: "${studentId}"`);
-    console.log(`[Delete Note Flow] - Subject: "${subject}"`);
-    console.log(`[Delete Note Flow] - Note ID: "${noteId}" (Chapter ${noteToDelete.chapterNo}: ${noteToDelete.chapterName})`);
-    console.log(`[Delete Note Flow] - Bucket Name: "${bucket}"`);
-    console.log(`[Delete Note Flow] - Storage Path / Raw URL: "${rawStoragePath}"`);
-    console.log(`[Delete Note Flow] - Firestore Student Document ID: "${targetStudent.id}"`);
-
-    // A. Delete PDF from Supabase Storage first
-    let storageResult: any = null;
+    // A. Delete file from Supabase Storage first
     if (rawStoragePath) {
       try {
-        storageResult = await deleteFileFromStorage(rawStoragePath, bucket);
-        console.log(`[Delete Note Flow] Supabase Storage Removal Result:`, storageResult);
+        await deleteFileFromStorage(rawStoragePath, bucket);
+        console.log(`[Delete Note Flow] Storage file removed: ${rawStoragePath}`);
       } catch (storageErr: any) {
-        console.error(`[Delete Note Flow] Supabase Storage Removal Error:`, storageErr);
-        throw new Error("Unable to delete note. Please try again.");
+        const errMsg = storageErr?.message || String(storageErr);
+        const isNotFound =
+          errMsg.toLowerCase().includes("not found") ||
+          errMsg.toLowerCase().includes("does not exist") ||
+          errMsg.toLowerCase().includes("not_found") ||
+          (storageErr as any)?.status === 404 ||
+          (storageErr as any)?.status === "404" ||
+          (storageErr as any)?.statusCode === 404 ||
+          (storageErr as any)?.statusCode === "404";
+
+        if (isNotFound) {
+          console.warn(`[Delete Note Flow] Storage object already removed: ${rawStoragePath}. Proceeding with database record deletion.`);
+        } else {
+          console.error(`[Delete Note Flow] Storage deletion error:`, storageErr);
+          throw new Error(`Storage deletion failed: ${errMsg}`);
+        }
       }
-    } else {
-      console.warn(`[Delete Note Flow] No storagePath or URL found on note object. Proceeding directly to document cleanup.`);
     }
 
     // B. Clear Cache Storage entries for this note
@@ -1093,10 +1097,11 @@ export default function App() {
       if ("caches" in window) {
         const cache = await caches.open("student-pdf-cache");
         const urlsToClear = [
-          noteToDelete.pdfUrl,
-          noteToDelete.storagePath,
-          noteToDelete.downloadUrl,
-          rawStoragePath
+          targetClassNote?.pdfUrl,
+          targetClassNote?.storagePath,
+          legacyNote?.pdfUrl,
+          legacyNote?.storagePath,
+          rawStoragePath,
         ].filter(Boolean) as string[];
 
         for (const url of urlsToClear) {
@@ -1111,37 +1116,28 @@ export default function App() {
       console.warn(`[Delete Note Flow] Cache clear warning:`, cacheErr);
     }
 
-    // C. Remove note from student's notes dictionary
-    const updatedSubjectNotes = subjectNotes.filter((n) => n.id !== noteId);
-    const updatedStudent: Student = {
-      ...targetStudent,
-      notes: {
-        ...targetStudent.notes,
-        [subject]: updatedSubjectNotes,
-      },
-    };
+    // C. Delete note document from database (Firestore & local storage)
+    await deleteClassNoteDoc(noteId);
 
-    // Remove from central classNotes repository as well
-    try {
-      await deleteClassNoteDoc(noteId);
-      setClassNotes((prev) => prev.filter((n) => n.id !== noteId));
-    } catch (e) {
-      console.warn("Failed deleting note from central repository:", e);
-    }
-
-    // D. Refresh UI immediately across Admin and Student views
-    setStudents((prev) => prev.map((s) => (s.id === studentId ? updatedStudent : s)));
-
-    // E. Save updated student document to Firestore
-    try {
-      await saveStudentDoc(updatedStudent);
-      console.log(`[Delete Note Flow] Firestore Response: Student document "${studentId}" successfully updated. Remaining notes for "${subject}": ${updatedSubjectNotes.length}.`);
-    } catch (dbErr: any) {
-      console.error(`[Delete Note Flow] Firestore Response Error: Failed to save updated document for student "${studentId}":`, dbErr);
-      // Revert local UI state on Firestore failure
-      setStudents((prev) => prev.map((s) => (s.id === studentId ? targetStudent : s)));
-      throw new Error("Unable to delete note. Please try again.");
-    }
+    // D. Refresh local state immediately across Admin and Student views
+    setClassNotes((prev) => prev.filter((n) => n.id !== noteId));
+    setStudents((prev) =>
+      prev.map((st) => {
+        if (!st.notes) return st;
+        let changed = false;
+        const updatedNotes: Record<string, ChapterNote[]> = {};
+        for (const [subKey, arr] of Object.entries(st.notes)) {
+          if (Array.isArray(arr)) {
+            const filtered = arr.filter((n) => n.id !== noteId);
+            if (filtered.length !== arr.length) changed = true;
+            if (filtered.length > 0) updatedNotes[subKey] = filtered;
+          } else {
+            updatedNotes[subKey] = arr;
+          }
+        }
+        return changed ? { ...st, notes: updatedNotes } : st;
+      })
+    );
   };
 
   // Toggle note complete state
@@ -1503,18 +1499,9 @@ export default function App() {
               students={students}
               onRefresh={() => {
                 const refreshedNotes = getLocalClassNotes();
-                if (refreshedNotes.length > 0) {
-                  setClassNotes((prev) => {
-                    const noteMap = new Map<string, ClassNote>();
-                    (prev || []).forEach((n) => noteMap.set(n.id, n));
-                    refreshedNotes.forEach((n) => noteMap.set(n.id, n));
-                    return Array.from(noteMap.values());
-                  });
-                }
+                setClassNotes(refreshedNotes);
                 const refreshedStudents = getLocalStudents();
-                if (refreshedStudents.length > 0) {
-                  setStudents(refreshedStudents);
-                }
+                setStudents(refreshedStudents);
               }}
             />
           )}

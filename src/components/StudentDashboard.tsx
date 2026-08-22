@@ -1583,9 +1583,7 @@ export function StudentMyTab({
 
   React.useEffect(() => {
     const unsub = subscribeToClassNotes((notes) => {
-      if (!notes || notes.length === 0) {
-        return;
-      }
+      if (!Array.isArray(notes)) return;
       setAllClassNotes((prev) => (areClassNotesEqual(prev, notes) ? prev : notes));
     });
     return () => {
@@ -2545,7 +2543,7 @@ export default function StudentDashboard({
 
   useEffect(() => {
     return subscribeToClassNotes((notes) => {
-      if (!notes || notes.length === 0) return;
+      if (!Array.isArray(notes)) return;
       setAllClassNotes((prev) => (areClassNotesEqual(prev, notes) ? prev : notes));
     });
   }, []);

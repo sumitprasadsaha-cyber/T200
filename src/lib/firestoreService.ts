@@ -1566,6 +1566,8 @@ export async function deleteClassNoteDoc(noteId: string): Promise<void> {
       console.warn("Failed cleansing Firestore student.notes on delete:", fsErr);
     }
   } catch (err) {
+    // Revert local cache on failure to prevent desync
+    saveLocalClassNotes(currentLocal);
     handleFirestoreError(err, OperationType.DELETE, `class_notes/${noteId}`);
   }
 }

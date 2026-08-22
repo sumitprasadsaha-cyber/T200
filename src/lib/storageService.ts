@@ -813,8 +813,12 @@ export async function deleteFileFromStorage(
     const errorMsg = error.message || JSON.stringify(error);
     const isNotFound =
       errorMsg.toLowerCase().includes("not found") ||
+      errorMsg.toLowerCase().includes("does not exist") ||
+      errorMsg.toLowerCase().includes("not_found") ||
       (error as any).status === 404 ||
-      (error as any).status === "404";
+      (error as any).status === "404" ||
+      (error as any).statusCode === 404 ||
+      (error as any).statusCode === "404";
 
     if (isNotFound) {
       console.warn(`[StorageService Warning] Storage file no longer exists in Supabase Storage: "${storagePath}". Proceeding.`);
