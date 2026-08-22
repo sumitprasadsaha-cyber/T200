@@ -1731,10 +1731,14 @@ export function StudentMyTab({
   };
 
   React.useEffect(() => {
-    if (initialSubject) {
+    if (initialSubject && sortedSubjects.includes(initialSubject)) {
       setSelectedSubject(initialSubject);
-    } else if (!selectedSubject && sortedSubjects.length > 0) {
-      setSelectedSubject(sortedSubjects[0]);
+    } else if (sortedSubjects.length > 0) {
+      if (!selectedSubject || !sortedSubjects.includes(selectedSubject)) {
+        setSelectedSubject(sortedSubjects[0]);
+      }
+    } else {
+      setSelectedSubject(null);
     }
   }, [initialSubject, sortedSubjects]);
 
@@ -1986,30 +1990,38 @@ export function StudentMyTab({
           </div>
 
           <div className="flex-1 overflow-y-auto flex flex-col gap-2 pr-1 scrollbar-thin" id="study-left-subjects">
-            {sortedSubjects.map((subject, idx) => {
-              const isActive = selectedSubject === subject;
-              const palette = getSubjectColor(subject);
-              const IconComponent = getSubjectIcon(subject, idx);
-              return (
-                <button
-                  key={subject}
-                  onClick={() => handleSelectSubject(subject)}
-                  className={`group rounded-xl border px-3 py-2.5 text-left text-xs font-bold transition-all flex items-center justify-between cursor-pointer ${
-                    isActive 
-                      ? `${palette.bg} border-blue-500 text-blue-700 dark:text-blue-400 shadow-sm` 
-                      : "border-slate-100 dark:border-slate-800/60 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-950 hover:border-slate-200"
-                  }`}
-                >
-                  <div className="flex items-center gap-2 truncate">
-                    <div className={`p-1.5 rounded-lg ${isActive ? palette.badge : "bg-slate-50 dark:bg-slate-950 group-hover:bg-slate-100"}`}>
-                      <IconComponent className={`h-3.5 w-3.5 ${isActive ? palette.text : "text-slate-400"}`} />
+            {sortedSubjects.length === 0 ? (
+              <div className="text-center py-8 px-3">
+                <BookOpen className="w-8 h-8 text-slate-300 dark:text-slate-700 mx-auto mb-2 stroke-[1.2]" />
+                <p className="text-xs font-bold text-slate-500 dark:text-slate-400">No Enrolled Subjects</p>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">No subjects assigned yet.</p>
+              </div>
+            ) : (
+              sortedSubjects.map((subject, idx) => {
+                const isActive = selectedSubject === subject;
+                const palette = getSubjectColor(subject);
+                const IconComponent = getSubjectIcon(subject, idx);
+                return (
+                  <button
+                    key={subject}
+                    onClick={() => handleSelectSubject(subject)}
+                    className={`group rounded-xl border px-3 py-2.5 text-left text-xs font-bold transition-all flex items-center justify-between cursor-pointer ${
+                      isActive 
+                        ? `${palette.bg} border-blue-500 text-blue-700 dark:text-blue-400 shadow-sm` 
+                        : "border-slate-100 dark:border-slate-800/60 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-950 hover:border-slate-200"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 truncate">
+                      <div className={`p-1.5 rounded-lg ${isActive ? palette.badge : "bg-slate-50 dark:bg-slate-950 group-hover:bg-slate-100"}`}>
+                        <IconComponent className={`h-3.5 w-3.5 ${isActive ? palette.text : "text-slate-400"}`} />
+                      </div>
+                      <span className="truncate">{subject}</span>
                     </div>
-                    <span className="truncate">{subject}</span>
-                  </div>
-                  <ChevronRight className={`h-4 w-4 shrink-0 transition-transform ${isActive ? "text-blue-500 translate-x-0.5" : "text-slate-350 opacity-0 group-hover:opacity-100"}`} />
-                </button>
-              );
-            })}
+                    <ChevronRight className={`h-4 w-4 shrink-0 transition-transform ${isActive ? "text-blue-500 translate-x-0.5" : "text-slate-350 opacity-0 group-hover:opacity-100"}`} />
+                  </button>
+                );
+              })
+            )}
           </div>
         </div>
 
@@ -2438,8 +2450,8 @@ export function StudentMyTab({
               </div>
             </>
           ) : (
-            <div className="flex-1 flex flex-col items-center justify-center text-center p-6 text-sm text-slate-500">
-              Choose a subject to view chapter-wise notes.
+            <div className="flex-1 flex flex-col items-center justify-center text-center p-6 text-sm text-slate-500 dark:text-slate-400">
+              {sortedSubjects.length === 0 ? "No enrolled subjects assigned yet." : "Choose a subject to view chapter-wise notes."}
             </div>
           )}
         </div>
@@ -2908,15 +2920,23 @@ export default function StudentDashboard({
       </div>
 
       <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3">
-        {subjectProgress.map((sub, index) => (
-          <SubjectProgressCard
-            key={sub.name}
-            subject={sub}
-            index={index}
-            onSelectSubject={onSelectSubject}
-            student={student}
-          />
-        ))}
+        {subjectProgress.length === 0 ? (
+          <div className="col-span-full py-8 text-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 p-6 shadow-xs">
+            <BookOpen className="w-10 h-10 text-slate-300 dark:text-slate-700 mx-auto mb-2 stroke-[1.2]" />
+            <p className="text-sm font-bold text-slate-700 dark:text-slate-300">No Enrolled Subjects</p>
+            <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">You do not have any enrolled subjects assigned yet.</p>
+          </div>
+        ) : (
+          subjectProgress.map((sub, index) => (
+            <SubjectProgressCard
+              key={sub.name}
+              subject={sub}
+              index={index}
+              onSelectSubject={onSelectSubject}
+              student={student}
+            />
+          ))
+        )}
       </div>
 
       <AttendanceBottomSheet

@@ -125,21 +125,29 @@ export function isSubjectMatching(subA?: string, subB?: string): boolean {
  * Filter centralized ClassNote items for a given student.
  * Must match:
  * 1. Student's ClassGrade (Class 1–12, UPSC)
- * 2. Student's EnrolledSubjects or Student's Class-level subject notes
+ * 2. Student's explicitly assigned/enrolled subjects
+ * 3. Specific note access rules (if selected student access is configured)
  */
 export function filterClassNotesForStudent(
   classNotes: ClassNote[],
   student: Student
 ): ClassNote[] {
   if (!student || !Array.isArray(classNotes)) return [];
+  
+  const enrolledSubjects = (student.enrolledSubjects || [])
+    .filter((s) => typeof s === "string" && s.trim())
+    .map((s) => s.trim().toLowerCase());
+
+  // If student has no assigned subjects, return empty list
+  if (enrolledSubjects.length === 0) {
+    return [];
+  }
+
   const studentGrade = student.classGrade || "";
-  const isUpscStudent = isClassGradeMatching(studentGrade, "UPSC");
-  const enrolledSubjects = (student.enrolledSubjects || []).map((s) => s.trim().toLowerCase());
-  const hasEnrolledList = Array.isArray(student.enrolledSubjects) && student.enrolledSubjects.length > 0;
+  const studentNormGrade = normalizeClassGrade(studentGrade).toLowerCase();
 
   return classNotes.filter((note) => {
-    if (!note) return false;
-    const studentNormGrade = normalizeClassGrade(studentGrade).toLowerCase();
+    if (!note || !note.subject || !note.subject.trim()) return false;
 
     // 1. Check class grade access
     let classMatches = false;
@@ -161,106 +169,26 @@ export function filterClassNotesForStudent(
       if (!note.allowedStudentIds.includes(student.id)) return false;
     }
 
-    // 3. Check subject match:
-    // If student has no specific enrolled subject restriction, all notes for their class are accessible
-    if (!hasEnrolledList) return true;
-    
-    // If student is registered as UPSC and has general "UPSC" or "All" or "General Studies" enrolled, grant access to all UPSC notes
-    if (isUpscStudent && (enrolledSubjects.includes("upsc") || enrolledSubjects.includes("all") || enrolledSubjects.includes("all subjects") || enrolledSubjects.includes("general studies"))) {
-      return true;
-    }
-
+    // 3. Check subject match strictly against enrolled subjects
     const noteSubj = (note.subject || "").trim();
-    const subjectMatches = enrolledSubjects.some((s) => isSubjectMatching(s, noteSubj));
-
-    return subjectMatches;
+    return enrolledSubjects.some((s) => isSubjectMatching(s, noteSubj));
   });
 }
 
 /**
- * Returns all subjects assigned to or available for a student,
- * combining enrolledSubjects, subjects with uploaded notes for their class, and legacy notes.
+ * Returns only the subjects assigned/enrolled to the student.
+ * Never falls back to returning all class subjects, UPSC default subjects, or unassigned central notes.
  */
-export function getStudentSubjects(student: Student, allClassNotes: ClassNote[] = []): string[] {
-  if (!student) return [];
+export function getStudentSubjects(student: Student, _allClassNotes: ClassNote[] = []): string[] {
+  if (!student || !Array.isArray(student.enrolledSubjects)) return [];
+
   const subjectsSet = new Set<string>();
 
-  // 1. Add student's explicitly enrolled subjects
-  if (Array.isArray(student.enrolledSubjects)) {
-    student.enrolledSubjects.forEach((sub) => {
-      if (sub && sub.trim()) {
-        subjectsSet.add(sub.trim());
-      }
-    });
-  }
-
-  // 2. Add subjects from legacy student.notes
-  if (student.notes && typeof student.notes === "object") {
-    Object.keys(student.notes).forEach((sub) => {
-      if (sub && sub.trim()) {
-        subjectsSet.add(sub.trim());
-      }
-    });
-  }
-
-  // 3. Add subjects from central class notes that match student's classGrade or are accessible to student
-  if (Array.isArray(allClassNotes)) {
-    const studentGrade = student.classGrade || "";
-    allClassNotes.forEach((note) => {
-      if (!note || !note.subject || !note.subject.trim()) return;
-
-      let classMatches = false;
-      const isExplicitlyShared = Array.isArray(note.allowedClasses) && note.allowedClasses.length > 0;
-      if (isExplicitlyShared) {
-        classMatches = note.allowedClasses!.some((c) => isClassGradeMatching(c, studentGrade));
-      } else if (note.accessType === "selected" && Array.isArray(note.allowedStudentIds)) {
-        classMatches = note.allowedStudentIds.includes(student.id);
-      } else {
-        classMatches = isClassGradeMatching(note.classGrade, studentGrade);
-      }
-
-      if (classMatches) {
-        subjectsSet.add(note.subject.trim());
-      }
-    });
-  }
-
-  // 4. Default subjects if empty based on class
-  if (subjectsSet.size === 0) {
-    const norm = normalizeClassGrade(student.classGrade);
-    if (norm === "UPSC") {
-      return [
-        "Polity",
-        "Geography",
-        "History",
-        "Economy",
-        "Environment",
-        "Ethics",
-        "Science & Technology",
-        "Current Affairs",
-        "International Relations",
-        "General Studies"
-      ];
+  student.enrolledSubjects.forEach((sub) => {
+    if (typeof sub === "string" && sub.trim()) {
+      subjectsSet.add(sub.trim());
     }
-  }
-
-  // If student only has umbrella "UPSC" or "All" enrolled, expand to any UPSC subjects available from notes or defaults
-  if (subjectsSet.has("UPSC") || subjectsSet.has("All") || subjectsSet.has("All Subjects")) {
-    const isUpsc = isClassGradeMatching(student.classGrade, "UPSC");
-    if (isUpsc) {
-      const upscNotesSubjects = (allClassNotes || [])
-        .filter((n) => isClassGradeMatching(n.classGrade, "UPSC") && n.subject)
-        .map((n) => n.subject.trim());
-      if (upscNotesSubjects.length > 0) {
-        upscNotesSubjects.forEach((s) => subjectsSet.add(s));
-      } else {
-        ["Polity", "Geography", "History", "Economy", "Environment", "Ethics", "Science & Technology", "Current Affairs", "International Relations", "General Studies"].forEach((s) => subjectsSet.add(s));
-      }
-      subjectsSet.delete("UPSC");
-      subjectsSet.delete("All");
-      subjectsSet.delete("All Subjects");
-    }
-  }
+  });
 
   return Array.from(subjectsSet).sort((a, b) => a.localeCompare(b));
 }
