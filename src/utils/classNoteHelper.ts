@@ -40,11 +40,7 @@ export function isSubjectMatching(subA?: string, subB?: string): boolean {
   // Universal match for "all" or "all subjects"
   if (a === "all" || a === "all subjects" || b === "all" || b === "all subjects") return true;
 
-  // UPSC specific subject normalizations & aliases
-  const isGsA = a === "gs" || a === "general studies" || a.startsWith("gs ") || a.startsWith("gs-") || a.startsWith("general studies");
-  const isGsB = b === "gs" || b === "general studies" || b.startsWith("gs ") || b.startsWith("gs-") || b.startsWith("general studies");
-  if (isGsA && isGsB) return true;
-
+  // UPSC specific subject aliases (Strict 1-to-1 canonical group matching, never bleed across different subjects)
   const isPolityA = a === "polity" || a === "political science" || a === "polity & governance" || a === "polity and governance" || a === "indian polity" || a === "governance" || a === "constitution";
   const isPolityB = b === "polity" || b === "political science" || b === "polity & governance" || b === "polity and governance" || b === "indian polity" || b === "governance" || b === "constitution";
   if (isPolityA && isPolityB) return true;
@@ -53,8 +49,8 @@ export function isSubjectMatching(subA?: string, subB?: string): boolean {
   const isEconB = b === "economics" || b === "economy" || b === "indian economy" || b === "eco";
   if (isEconA && isEconB) return true;
 
-  const isHistA = a === "history" || a === "indian history" || a === "ancient history" || a === "medieval history" || a === "modern history" || a === "art & culture" || a === "art and culture" || a === "hist";
-  const isHistB = b === "history" || b === "indian history" || b === "ancient history" || b === "medieval history" || b === "modern history" || b === "art & culture" || b === "art and culture" || b === "hist";
+  const isHistA = a === "history" || a === "indian history" || a === "ancient history" || a === "medieval history" || a === "modern history" || a === "hist";
+  const isHistB = b === "history" || b === "indian history" || b === "ancient history" || b === "medieval history" || b === "modern history" || b === "hist";
   if (isHistA && isHistB) return true;
 
   const isGeoA = a === "geography" || a === "physical geography" || a === "indian geography" || a === "world geography" || a === "geo";
@@ -65,21 +61,25 @@ export function isSubjectMatching(subA?: string, subB?: string): boolean {
   const isEnvB = b === "environment" || b === "ecology" || b === "environment & ecology" || b === "environment and ecology" || b === "env";
   if (isEnvA && isEnvB) return true;
 
-  const isSciTechA = a === "science & technology" || a === "science and technology" || a === "science & tech" || a === "sci & tech" || a === "s&t";
-  const isSciTechB = b === "science & technology" || b === "science and technology" || b === "science & tech" || b === "sci & tech" || b === "s&t";
+  const isSciTechA = a === "science & technology" || a === "science and technology" || a === "science & tech" || a === "sci & tech" || a === "s&t" || a === "science & tech.";
+  const isSciTechB = b === "science & technology" || b === "science and technology" || b === "science & tech" || b === "sci & tech" || b === "s&t" || b === "science & tech.";
   if (isSciTechA && isSciTechB) return true;
 
   const isIrA = a === "international relations" || a === "ir" || a === "international affairs";
   const isIrB = b === "international relations" || b === "ir" || b === "international affairs";
   if (isIrA && isIrB) return true;
 
-  const isEthicsA = a === "ethics" || a === "ethics & integrity" || a === "ethics, integrity & aptitude" || a === "ethics and integrity" || a === "gs 4" || a === "gs-4";
-  const isEthicsB = b === "ethics" || b === "ethics & integrity" || b === "ethics, integrity & aptitude" || b === "ethics and integrity" || b === "gs 4" || b === "gs-4";
+  const isEthicsA = a === "ethics" || a === "ethics & integrity" || a === "ethics, integrity & aptitude" || a === "ethics and integrity" || a === "ethics, integrity and aptitude";
+  const isEthicsB = b === "ethics" || b === "ethics & integrity" || b === "ethics, integrity & aptitude" || b === "ethics and integrity" || b === "ethics, integrity and aptitude";
   if (isEthicsA && isEthicsB) return true;
 
   const isCaA = a === "current affairs" || a === "current issues" || a === "daily current affairs" || a === "ca";
   const isCaB = b === "current affairs" || b === "current issues" || b === "daily current affairs" || b === "ca";
   if (isCaA && isCaB) return true;
+
+  const isGsA = a === "general studies" || a === "gs";
+  const isGsB = b === "general studies" || b === "gs";
+  if (isGsA && isGsB) return true;
 
   const isCsatA = a === "csat" || a === "aptitude" || a === "general mental ability" || a === "paper 2";
   const isCsatB = b === "csat" || b === "aptitude" || b === "general mental ability" || b === "paper 2";
@@ -230,28 +230,35 @@ export function getStudentSubjects(student: Student, allClassNotes: ClassNote[] 
     const norm = normalizeClassGrade(student.classGrade);
     if (norm === "UPSC") {
       return [
-        "General Studies",
-        "History",
+        "Polity",
         "Geography",
-        "Polity & Governance",
-        "Economics",
-        "Environment & Ecology",
-        "Science & Technology",
-        "International Relations",
+        "History",
+        "Economy",
+        "Environment",
         "Ethics",
-        "Current Affairs"
+        "Science & Technology",
+        "Current Affairs",
+        "International Relations",
+        "General Studies"
       ];
     }
   }
 
-  // If student only has umbrella "UPSC" enrolled, expand to any UPSC subjects available from notes
-  if (subjectsSet.has("UPSC")) {
-    const upscNotesSubjects = (allClassNotes || [])
-      .filter((n) => isClassGradeMatching(n.classGrade, "UPSC"))
-      .map((n) => n.subject.trim());
-    if (upscNotesSubjects.length > 0) {
-      upscNotesSubjects.forEach((s) => subjectsSet.add(s));
+  // If student only has umbrella "UPSC" or "All" enrolled, expand to any UPSC subjects available from notes or defaults
+  if (subjectsSet.has("UPSC") || subjectsSet.has("All") || subjectsSet.has("All Subjects")) {
+    const isUpsc = isClassGradeMatching(student.classGrade, "UPSC");
+    if (isUpsc) {
+      const upscNotesSubjects = (allClassNotes || [])
+        .filter((n) => isClassGradeMatching(n.classGrade, "UPSC") && n.subject)
+        .map((n) => n.subject.trim());
+      if (upscNotesSubjects.length > 0) {
+        upscNotesSubjects.forEach((s) => subjectsSet.add(s));
+      } else {
+        ["Polity", "Geography", "History", "Economy", "Environment", "Ethics", "Science & Technology", "Current Affairs", "International Relations", "General Studies"].forEach((s) => subjectsSet.add(s));
+      }
       subjectsSet.delete("UPSC");
+      subjectsSet.delete("All");
+      subjectsSet.delete("All Subjects");
     }
   }
 

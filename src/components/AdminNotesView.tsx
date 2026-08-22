@@ -56,7 +56,7 @@ const DEFAULT_SUBJECTS_BY_CLASS: Record<string, string[]> = {
   "Class 10": ["Mathematics", "Science", "English", "Computer Science", "Indian Heritage and Culture", "Economics", "History", "Geography"],
   "Class 11": ["Physics", "Chemistry", "Mathematics", "Biology", "Computer Science", "English", "Economics", "Accountancy"],
   "Class 12": ["Physics", "Chemistry", "Mathematics", "Biology", "Computer Science", "English", "Economics", "Accountancy"],
-  "UPSC": ["General Studies", "History", "Geography", "Polity & Governance", "Economics", "Environment & Ecology", "Science & Technology", "International Relations", "Ethics", "Current Affairs"]
+  "UPSC": ["Polity", "Geography", "History", "Economy", "Environment", "Ethics", "Science & Technology", "Current Affairs", "International Relations", "General Studies"]
 };
 
 export default function AdminNotesView({ notes, students = [], onRefresh }: AdminNotesViewProps) {

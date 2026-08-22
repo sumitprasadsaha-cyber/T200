@@ -473,6 +473,87 @@ function getSubjectVisualStyle(subjectName: string): SubjectVisualStyle {
       badge: "bg-amber-50 text-amber-700",
       border: "border-amber-100",
       shadow: "shadow-[0_16px_40px_rgba(245,158,11,0.10)]"
+    },
+    polity: {
+      topBar: "from-indigo-600 via-blue-600 to-sky-600",
+      iconBg: "bg-indigo-50",
+      iconAccent: "text-indigo-600",
+      ring: "text-indigo-600",
+      badge: "bg-indigo-50 text-indigo-700",
+      border: "border-indigo-100",
+      shadow: "shadow-[0_16px_40px_rgba(79,70,229,0.10)]"
+    },
+    history: {
+      topBar: "from-amber-600 via-amber-700 to-yellow-800",
+      iconBg: "bg-amber-50",
+      iconAccent: "text-amber-700",
+      ring: "text-amber-700",
+      badge: "bg-amber-50 text-amber-800",
+      border: "border-amber-100",
+      shadow: "shadow-[0_16px_40px_rgba(180,83,9,0.10)]"
+    },
+    geography: {
+      topBar: "from-teal-500 via-emerald-600 to-green-700",
+      iconBg: "bg-teal-50",
+      iconAccent: "text-teal-600",
+      ring: "text-teal-600",
+      badge: "bg-teal-50 text-teal-700",
+      border: "border-teal-100",
+      shadow: "shadow-[0_16px_40px_rgba(13,148,136,0.10)]"
+    },
+    economy: {
+      topBar: "from-emerald-500 via-teal-500 to-cyan-600",
+      iconBg: "bg-emerald-50",
+      iconAccent: "text-emerald-600",
+      ring: "text-emerald-600",
+      badge: "bg-emerald-50 text-emerald-700",
+      border: "border-emerald-100",
+      shadow: "shadow-[0_16px_40px_rgba(16,185,129,0.10)]"
+    },
+    environment: {
+      topBar: "from-green-500 via-emerald-600 to-teal-600",
+      iconBg: "bg-green-50",
+      iconAccent: "text-green-600",
+      ring: "text-green-600",
+      badge: "bg-green-50 text-green-700",
+      border: "border-green-100",
+      shadow: "shadow-[0_16px_40px_rgba(34,197,94,0.10)]"
+    },
+    ethics: {
+      topBar: "from-purple-600 via-violet-600 to-indigo-600",
+      iconBg: "bg-purple-50",
+      iconAccent: "text-purple-600",
+      ring: "text-purple-600",
+      badge: "bg-purple-50 text-purple-700",
+      border: "border-purple-100",
+      shadow: "shadow-[0_16px_40px_rgba(147,51,234,0.10)]"
+    },
+    "science & technology": {
+      topBar: "from-cyan-500 via-blue-600 to-indigo-600",
+      iconBg: "bg-cyan-50",
+      iconAccent: "text-cyan-600",
+      ring: "text-cyan-600",
+      badge: "bg-cyan-50 text-cyan-700",
+      border: "border-cyan-100",
+      shadow: "shadow-[0_16px_40px_rgba(6,182,212,0.10)]"
+    },
+    "current affairs": {
+      topBar: "from-rose-500 via-pink-600 to-red-600",
+      iconBg: "bg-rose-50",
+      iconAccent: "text-rose-600",
+      ring: "text-rose-600",
+      badge: "bg-rose-50 text-rose-700",
+      border: "border-rose-100",
+      shadow: "shadow-[0_16px_40px_rgba(244,63,94,0.10)]"
+    },
+    "international relations": {
+      topBar: "from-blue-600 via-indigo-600 to-violet-700",
+      iconBg: "bg-blue-50",
+      iconAccent: "text-blue-600",
+      ring: "text-blue-600",
+      badge: "bg-blue-50 text-blue-700",
+      border: "border-blue-100",
+      shadow: "shadow-[0_16px_40px_rgba(37,99,235,0.10)]"
     }
   };
 
@@ -1438,7 +1519,11 @@ export function getSubjectIcon(subject: string, index?: number) {
   if (norm.includes("business studies") || norm.includes("business")) return Briefcase;
   if (norm.includes("history")) return Scroll;
   if (norm.includes("geography")) return Globe;
-  if (norm.includes("political science") || norm.includes("political")) return Landmark;
+  if (norm.includes("polity") || norm.includes("political science") || norm.includes("political") || norm.includes("constitution") || norm.includes("governance")) return Landmark;
+  if (norm.includes("ethics") || norm.includes("integrity")) return Scale;
+  if (norm.includes("international relations") || norm.includes("ir") || norm.includes("international")) return Globe;
+  if (norm.includes("current affairs") || norm.includes("current")) return FileText;
+  if (norm.includes("science & tech") || norm.includes("science and tech") || norm.includes("technology")) return Cpu;
   if (norm.includes("civics")) return Scale;
   if (norm.includes("indian heritage") || norm.includes("culture") || norm.includes("heritage")) return Landmark;
   if (norm.includes("art")) return Palette;

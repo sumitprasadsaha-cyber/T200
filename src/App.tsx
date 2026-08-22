@@ -43,7 +43,7 @@ import {
   clearCachedAuthSession,
   fetchFreshAdminDashboardData
 } from "./lib/firestoreService";
-import { migrateLegacyNotesToClassNotes } from "./utils/classNoteHelper";
+import { migrateLegacyNotesToClassNotes, filterClassNotesForStudent, getStudentSubjects, isSubjectMatching } from "./utils/classNoteHelper";
 import { deleteFileFromStorage, uploadProfilePhoto } from "./lib/storageService";
 import { safeLocalStorageSetItem, safeLocalStorageGetItem, safeLocalStorageRemoveItem } from "./lib/safeStorage";
 import { supabase } from "./lib/supabaseClient";
@@ -637,8 +637,47 @@ export default function App() {
   // Find notes for the current active subject
   const currentSubjectNotes = React.useMemo(() => {
     if (!activeStudent || !activeSubject) return [];
-    return activeStudent.notes?.[activeSubject] || [];
-  }, [activeStudent, activeSubject]);
+    const fromClassNotes: ChapterNote[] = filterClassNotesForStudent(classNotes, activeStudent)
+      .filter((n) => isSubjectMatching(n.subject, activeSubject))
+      .map((cn) => ({
+        id: cn.id,
+        classGrade: cn.classGrade,
+        subject: cn.subject,
+        chapterNo: cn.chapterNo,
+        chapterName: cn.chapterName,
+        partLabel: cn.partLabel,
+        topicNo: cn.topicNo,
+        topicName: cn.topicName,
+        pdfUrl: cn.pdfUrl,
+        pdfFileName: cn.pdfFileName,
+        storagePath: cn.storagePath,
+        bucket: cn.bucket,
+        fileType: cn.fileType,
+        mimeType: cn.mimeType,
+        createdAt: cn.createdAt,
+        uploadedBy: cn.uploadedBy,
+        accessType: cn.accessType || "all",
+        allowedStudentIds: cn.allowedStudentIds || [],
+      }));
+
+    let legacyRaw: ChapterNote[] = [];
+    if (activeStudent.notes) {
+      for (const [k, v] of Object.entries(activeStudent.notes)) {
+        if (isSubjectMatching(k, activeSubject) && Array.isArray(v)) {
+          legacyRaw = [...legacyRaw, ...v];
+        }
+      }
+    }
+
+    const combined = [...fromClassNotes];
+    legacyRaw.forEach((legNote) => {
+      if (!combined.some((n) => n.id === legNote.id)) {
+        combined.push(legNote);
+      }
+    });
+
+    return combined;
+  }, [activeStudent, activeSubject, classNotes]);
 
   // --- State Mutators ---
 
@@ -1395,7 +1434,7 @@ export default function App() {
             handleUpdateNoteAccess(subj, noteId, accessType, allowedStudentIds)
           }
           isAdmin={auth.role === "admin"}
-          enrolledSubjects={activeStudent.enrolledSubjects}
+          enrolledSubjects={getStudentSubjects(activeStudent, classNotes)}
           onSelectSubject={(subj) => setActiveSubject(subj)}
           students={students}
         />
