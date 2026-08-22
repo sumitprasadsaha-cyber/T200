@@ -9,6 +9,23 @@ interface AddEditStudentModalProps {
   studentToEdit?: Student | null;
 }
 
+// Full list of available classes including UPSC
+export const CLASS_OPTIONS = [
+  "Class 1",
+  "Class 2",
+  "Class 3",
+  "Class 4",
+  "Class 5",
+  "Class 6",
+  "Class 7",
+  "Class 8",
+  "Class 9",
+  "Class 10",
+  "Class 11",
+  "Class 12",
+  "UPSC"
+];
+
 // Full categorized list of Core Academic Subjects matching requests
 export const SUBJECT_CATEGORIES = [
   {
@@ -51,7 +68,8 @@ export default function AddEditStudentModal({
   };
 
   const [name, setName] = useState("");
-  const [classNum, setClassNum] = useState<number>(9); // Slider range 1-12
+  const [selectedClass, setSelectedClass] = useState("Class 9");
+  const [classIndex, setClassIndex] = useState<number>(9); // 1-13 (12 is Class 12, 13 is UPSC)
   const [phoneVal, setPhoneVal] = useState("");
   const [parentPhoneVal, setParentPhoneVal] = useState("");
   const [monthlyFee, setMonthlyFee] = useState(1000);
@@ -80,8 +98,17 @@ export default function AddEditStudentModal({
   useEffect(() => {
     if (studentToEdit) {
       setName(studentToEdit.name);
-      const parsedNum = parseInt(studentToEdit.classGrade.replace(/[^0-9]/g, "")) || 9;
-      setClassNum(parsedNum);
+      const rawClass = (studentToEdit.classGrade || "").trim();
+      const isUpsc = /^upsc$/i.test(rawClass) || /^class\s+upsc$/i.test(rawClass);
+      if (isUpsc) {
+        setSelectedClass("UPSC");
+        setClassIndex(13);
+      } else {
+        const parsedNum = parseInt(rawClass.replace(/[^0-9]/g, "")) || 9;
+        const clampedNum = Math.min(Math.max(parsedNum, 1), 12);
+        setSelectedClass(`Class ${clampedNum}`);
+        setClassIndex(clampedNum);
+      }
       setPhoneVal(cleanTo10Digits(studentToEdit.phone));
       setParentPhoneVal(cleanTo10Digits(studentToEdit.parentPhone));
       setMonthlyFee(studentToEdit.monthlyFee);
@@ -92,7 +119,8 @@ export default function AddEditStudentModal({
       setPasswordVal(studentToEdit.password || "");
     } else {
       setName("");
-      setClassNum(9);
+      setSelectedClass("Class 9");
+      setClassIndex(9);
       setPhoneVal("");
       setParentPhoneVal(""); // Optional, start completely blank
       setMonthlyFee(1000);
@@ -162,7 +190,7 @@ export default function AddEditStudentModal({
 
     onSave({
       name: name.trim(),
-      classGrade: `Class ${classNum}`,
+      classGrade: selectedClass,
       phone: `+91${phoneVal}`,
       parentPhone: hasParentPhone ? `+91${parentPhoneVal}` : "",
       monthlyFee: Number(monthlyFee) || 0,
@@ -252,7 +280,7 @@ export default function AddEditStudentModal({
 
           {/* Row: Class (SLIDER with discrete dots) & Tuition Fee */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-            {/* Field: Class (Slider from 1 to 12 with markers/dots on steps 2, 3, ..., 11) */}
+            {/* Field: Class / Grade (Slider from Class 1 to 12 + UPSC) */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-1.5 justify-between">
                 <span className="flex items-center gap-1.5">
@@ -260,7 +288,7 @@ export default function AddEditStudentModal({
                   Class / Grade
                 </span>
                 <span className="bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 text-xs px-2.5 py-0.5 rounded-full font-bold">
-                  Class {classNum}
+                  {selectedClass}
                 </span>
               </label>
               
@@ -270,16 +298,21 @@ export default function AddEditStudentModal({
                   <input
                     type="range"
                     min="1"
-                    max="12"
-                    value={classNum}
-                    onChange={(e) => setClassNum(Number(e.target.value))}
+                    max="13"
+                    value={classIndex}
+                    onChange={(e) => {
+                      const idx = Number(e.target.value);
+                      setClassIndex(idx);
+                      const opt = CLASS_OPTIONS[idx - 1] || "Class 9";
+                      setSelectedClass(opt);
+                    }}
                     className="w-full accent-blue-600 h-1 bg-slate-200 dark:bg-slate-800 rounded-lg cursor-pointer appearance-none z-10"
                   />
-                  {/* Dots for step 1, 2, 3, ..., 11, 12 */}
+                  {/* Dots for step 1 to 13 (UPSC) */}
                   <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 flex justify-between pointer-events-none px-1">
-                    {Array.from({ length: 12 }).map((_, idx) => {
+                    {CLASS_OPTIONS.map((_, idx) => {
                       const val = idx + 1;
-                      const isActive = classNum >= val;
+                      const isActive = classIndex >= val;
                       return (
                         <div
                           key={val}
@@ -294,15 +327,19 @@ export default function AddEditStudentModal({
                   </div>
                 </div>
                 
-                {/* Labels 1 to 12 below the track */}
-                <div className="flex justify-between text-[9px] font-extrabold text-slate-400 dark:text-slate-600 px-0.5 mt-1.5">
-                  {Array.from({ length: 12 }).map((_, idx) => (
+                {/* Labels 1 to 12 + UPSC below the track */}
+                <div className="flex justify-between text-[8px] sm:text-[9px] font-extrabold text-slate-400 dark:text-slate-600 px-0.5 mt-1.5">
+                  {CLASS_OPTIONS.map((opt, idx) => (
                     <span 
                       key={idx} 
-                      className={`cursor-pointer transition-colors ${classNum === idx + 1 ? "text-blue-600 dark:text-blue-400 scale-110 font-black" : ""}`}
-                      onClick={() => setClassNum(idx + 1)}
+                      className={`cursor-pointer transition-colors ${classIndex === idx + 1 ? "text-blue-600 dark:text-blue-400 scale-110 font-black" : ""}`}
+                      onClick={() => {
+                        const val = idx + 1;
+                        setClassIndex(val);
+                        setSelectedClass(opt);
+                      }}
                     >
-                      {idx + 1}
+                      {idx === 12 ? "UPSC" : idx + 1}
                     </span>
                   ))}
                 </div>

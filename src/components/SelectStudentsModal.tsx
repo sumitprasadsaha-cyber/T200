@@ -43,7 +43,12 @@ export default function SelectStudentsModal({
     students.forEach((s) => {
       if (s.classGrade) classesSet.add(s.classGrade);
     });
-    return Array.from(classesSet).sort();
+    return Array.from(classesSet).sort((a, b) => {
+      const numA = parseInt(a.replace(/\D/g, ""), 10) || 999;
+      const numB = parseInt(b.replace(/\D/g, ""), 10) || 999;
+      if (numA !== numB) return numA - numB;
+      return a.localeCompare(b);
+    });
   }, [students]);
 
   // Filter students by Search Query and Class Filter

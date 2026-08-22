@@ -54,6 +54,7 @@ export function formatLastActive(lastActiveAt?: string, isOnline?: boolean): str
 function normalizeClassGrade(classGrade?: string): string {
   if (!classGrade || !classGrade.trim()) return "Unassigned";
   const trimmed = classGrade.trim();
+  if (/^upsc$/i.test(trimmed) || /^class\s+upsc$/i.test(trimmed)) return "UPSC";
   if (/^class\s+/i.test(trimmed)) return trimmed;
   if (/^\d+$/.test(trimmed)) return `Class ${trimmed}`;
   return trimmed;
@@ -83,8 +84,8 @@ export default function LiveStudentsView({ students, onRefresh }: LiveStudentsVi
     });
     const list = Array.from(set);
     list.sort((a, b) => {
-      const numA = parseInt(a.replace(/\D/g, "")) || 0;
-      const numB = parseInt(b.replace(/\D/g, "")) || 0;
+      const numA = parseInt(a.replace(/\D/g, "")) || 999;
+      const numB = parseInt(b.replace(/\D/g, "")) || 999;
       if (numA !== numB) return numA - numB;
       return a.localeCompare(b);
     });

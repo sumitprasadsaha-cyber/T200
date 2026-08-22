@@ -163,11 +163,16 @@ export default function StudentList({
 
     const classes = Array.from(classesSet);
     
-    // Sort numerically descending e.g. Class 10, Class 9, Class 8
+    // Sort classes (Class 1..12, then UPSC)
     classes.sort((a, b) => {
+      const isAUpsc = /^upsc$/i.test(a.trim()) || /^class\s+upsc$/i.test(a.trim());
+      const isBUpsc = /^upsc$/i.test(b.trim()) || /^class\s+upsc$/i.test(b.trim());
+      if (isAUpsc && !isBUpsc) return 1;
+      if (!isAUpsc && isBUpsc) return -1;
       const numA = parseInt((a || "").replace(/[^0-9]/g, "")) || 0;
       const numB = parseInt((b || "").replace(/[^0-9]/g, "")) || 0;
-      return numB - numA;
+      if (numA !== numB) return numA - numB;
+      return a.localeCompare(b);
     });
 
     return ["All", ...classes];
@@ -450,7 +455,7 @@ export default function StudentList({
                     Manage Student Services
                   </h3>
                   <p className="text-xs text-slate-400 font-medium">
-                    {selectedServiceStudent.name} • Class {selectedServiceStudent.classGrade}
+                    {selectedServiceStudent.name} • {selectedServiceStudent.classGrade?.toUpperCase().includes("UPSC") ? "UPSC" : (selectedServiceStudent.classGrade?.startsWith("Class") ? selectedServiceStudent.classGrade : `Class ${selectedServiceStudent.classGrade}`)}
                   </p>
                 </div>
               </div>

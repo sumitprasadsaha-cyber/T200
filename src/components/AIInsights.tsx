@@ -96,7 +96,12 @@ export default function AIInsights({ students }: AIInsightsProps) {
     students.forEach((s) => {
       if (s.classGrade) set.add(s.classGrade);
     });
-    return Array.from(set).sort();
+    return Array.from(set).sort((a, b) => {
+      const numA = parseInt(a.replace(/\D/g, ""), 10) || 999;
+      const numB = parseInt(b.replace(/\D/g, ""), 10) || 999;
+      if (numA !== numB) return numA - numB;
+      return a.localeCompare(b);
+    });
   }, [students]);
 
   // Derived high level stats for Institution Overview Card

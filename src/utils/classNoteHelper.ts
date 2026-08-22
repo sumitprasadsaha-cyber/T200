@@ -3,6 +3,9 @@ import { ClassNote, Student, ChapterNote } from "../types";
 export function normalizeClassGrade(grade?: string): string {
   if (!grade) return "";
   const trimmed = grade.trim();
+  if (/^upsc$/i.test(trimmed) || /^class\s+upsc$/i.test(trimmed)) {
+    return "UPSC";
+  }
   const match = trimmed.match(/\d+/);
   if (match) {
     return `Class ${match[0]}`;
@@ -18,7 +21,7 @@ export function normalizeClassGrade(grade?: string): string {
   if (/^class/i.test(trimmed)) {
     return trimmed;
   }
-  return `Class ${trimmed}`;
+  return trimmed;
 }
 
 export function isClassGradeMatching(gradeA?: string, gradeB?: string): boolean {
@@ -160,8 +163,8 @@ export function groupClassNotesHierarchy(notes: ClassNote[]): GroupedClassNotes[
 
   // Sort classes numerical order e.g. Class 6, Class 7, Class 8, Class 9, Class 10...
   const sortedClasses = Array.from(classMap.keys()).sort((a, b) => {
-    const numA = parseInt(a.replace(/\D/g, ""), 10) || 0;
-    const numB = parseInt(b.replace(/\D/g, ""), 10) || 0;
+    const numA = parseInt(a.replace(/\D/g, ""), 10) || 999;
+    const numB = parseInt(b.replace(/\D/g, ""), 10) || 999;
     if (numA !== numB) return numA - numB;
     return a.localeCompare(b);
   });

@@ -45,6 +45,9 @@ interface DashboardProps {
 function normalizeClassName(classGrade: string) {
   if (!classGrade || !classGrade.trim()) return "Unassigned Class";
   const trimmed = classGrade.trim();
+  if (/^upsc$/i.test(trimmed) || /^class\s+upsc$/i.test(trimmed)) {
+    return "UPSC";
+  }
   if (/^class\s+/i.test(trimmed)) {
     return trimmed;
   }
