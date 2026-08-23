@@ -24,6 +24,8 @@ export interface OpenPdfResult {
   message?: string;
   cachedPath?: string;
   isNative?: boolean;
+  objectUrl?: string;
+  blob?: Blob;
 }
 
 // In-flight download/open operations tracker to prevent duplicate parallel downloads
@@ -154,6 +156,9 @@ export function isNativePlatform(): boolean {
     if (platform === "android" || platform === "ios") {
       return true;
     }
+    if (Capacitor.isPluginAvailable?.("FileOpener") || Capacitor.isPluginAvailable?.("Filesystem")) {
+      return true;
+    }
   }
   if (typeof window !== "undefined") {
     if (Boolean((window as any).Capacitor?.isNativePlatform?.())) return true;
@@ -161,20 +166,6 @@ export function isNativePlatform(): boolean {
     if (Boolean((window as any).cordova)) return true;
   }
   return false;
-}
-
-/**
- * Downloads a Blob directly on web without opening any browser popup or blank tab.
- */
-export function downloadBlobDirectly(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 /**
@@ -394,10 +385,13 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
         }
       } else {
         const cached = webBlobCache.get(cacheFileName);
-        if (cached?.blob) {
-          downloadBlobDirectly(cached.blob, fileName || `${cacheFileName}.${ext}`);
-        }
-        return { success: true, isNative: false };
+        return {
+          success: true,
+          isNative: false,
+          cachedPath: cacheCheck.uri,
+          objectUrl: cacheCheck.uri,
+          blob: cached?.blob
+        };
       }
     }
 
@@ -583,14 +577,12 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
       updateProgress(100, "Opening…");
       return { success: true, cachedPath: uriResult.uri, isNative: true };
     } else {
-      // Web fallback: download directly without popup/new tab
+      // Web / in-app preview: keep in web memory cache
       const objectUrl = URL.createObjectURL(pdfBlob);
       webBlobCache.set(cacheFileName, { blob: pdfBlob, objectUrl });
 
-      updateProgress(95, "Opening…");
-      downloadBlobDirectly(pdfBlob, fileName || `${cacheFileName}.${ext}`);
       updateProgress(100, "Opening…");
-      return { success: true, isNative: false };
+      return { success: true, isNative: false, objectUrl, blob: pdfBlob, cachedPath: objectUrl };
     }
   };
 
@@ -621,6 +613,14 @@ export async function saveAndOpenGeneratedPdf(pdfBlob: Blob, fileName: string): 
     });
     await launchNativeViewerOnce(uriResult.uri, "application/pdf", false);
   } else {
-    downloadBlobDirectly(pdfBlob, fileName);
+    // Web direct export for generated financial / audit receipts
+    const url = URL.createObjectURL(pdfBlob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 }

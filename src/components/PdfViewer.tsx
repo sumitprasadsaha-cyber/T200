@@ -31,10 +31,11 @@ export default function PdfViewer({
   subject
 }: PdfViewerProps) {
   const [status, setStatus] = useState<NoteViewerState>("downloading");
-  const [progress, setProgress] = useState(20);
+  const [progress, setProgress] = useState(0);
   const [statusText, setStatusText] = useState("Preparing Note…");
   const [error, setError] = useState<string | null>(null);
   const [retryTrigger, setRetryTrigger] = useState(0);
+  const [webPreviewUrl, setWebPreviewUrl] = useState<string | null>(null);
 
   const isImg = isImageFile(fileName, url, mimeType, fileType);
   const isExecutingRef = useRef(false);
@@ -69,7 +70,7 @@ export default function PdfViewer({
       setProgress(0);
       setStatusText("Preparing Note…");
 
-      await openPdfWithNativeViewer({
+      const result = await openPdfWithNativeViewer({
         url,
         title,
         storagePath,
@@ -91,16 +92,27 @@ export default function PdfViewer({
       });
 
       if (!isMountedRef.current) return;
-      setStatus("opened");
-      setProgress(100);
 
       // Record note as opened/downloaded for progress tracking
       if (noteId && studentId) {
         recordNoteOpenedOrDownloaded(studentId, subject || "", noteId);
       }
 
-      // Immediately dismiss modal overlay upon completion
-      onCloseRef.current();
+      if (result.isNative) {
+        // Native device opened in system viewer -> dismiss modal immediately
+        setStatus("opened");
+        setProgress(100);
+        onCloseRef.current();
+      } else if (result.objectUrl) {
+        // Web / browser environment -> display in-app viewer
+        setWebPreviewUrl(result.objectUrl);
+        setStatus("opened");
+        setProgress(100);
+      } else {
+        setStatus("opened");
+        setProgress(100);
+        onCloseRef.current();
+      }
     } catch (err: any) {
       console.error("[PdfViewer Modal] Error opening document:", err);
       if (!isMountedRef.current) return;
@@ -134,29 +146,57 @@ export default function PdfViewer({
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fadeIn select-none">
-      <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 text-white flex flex-col items-center text-center">
+      <div className={`relative w-full ${webPreviewUrl ? "max-w-4xl max-h-[90vh]" : "max-w-md"} bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 text-white flex flex-col items-center text-center transition-all`}>
         {/* Close Button */}
         <button
           type="button"
           onClick={handleClose}
-          className="absolute top-3 right-3 p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition cursor-pointer"
+          className="absolute top-3 right-3 p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition cursor-pointer z-10"
           title="Close"
         >
           <X className="w-5 h-5" />
         </button>
 
-        {/* Icon Badge */}
-        <div className="p-3.5 bg-blue-600/10 border border-blue-500/20 text-blue-400 rounded-2xl mb-4">
-          {isImg ? <ImageIcon className="w-8 h-8" /> : <FileText className="w-8 h-8" />}
-        </div>
+        {/* Header (when not showing large web preview) */}
+        {!webPreviewUrl && (
+          <>
+            {/* Icon Badge */}
+            <div className="p-3.5 bg-blue-600/10 border border-blue-500/20 text-blue-400 rounded-2xl mb-4">
+              {isImg ? <ImageIcon className="w-8 h-8" /> : <FileText className="w-8 h-8" />}
+            </div>
 
-        {/* Document Title */}
-        <h3 className="text-base font-bold text-slate-100 truncate max-w-full px-2 mb-1">
-          {title}
-        </h3>
-        <p className="text-xs text-slate-400 mb-5">
-          {isImg ? "Study Space Photo" : "Study Space Notes"}
-        </p>
+            {/* Document Title */}
+            <h3 className="text-base font-bold text-slate-100 truncate max-w-full px-2 mb-1">
+              {title}
+            </h3>
+            <p className="text-xs text-slate-400 mb-5">
+              {isImg ? "Study Space Photo" : "Study Space Notes"}
+            </p>
+          </>
+        )}
+
+        {/* Web In-App Viewer */}
+        {status === "opened" && webPreviewUrl && (
+          <div className="w-full flex flex-col items-center gap-3 pt-2">
+            <div className="flex items-center gap-2 self-start mb-2 px-1">
+              {isImg ? <ImageIcon className="w-4 h-4 text-blue-400" /> : <FileText className="w-4 h-4 text-blue-400" />}
+              <span className="text-xs font-bold text-slate-200 truncate">{title}</span>
+            </div>
+            {isImg ? (
+              <img
+                src={webPreviewUrl}
+                alt={title}
+                className="max-h-[70vh] w-auto max-w-full rounded-xl object-contain border border-slate-800 shadow-inner"
+              />
+            ) : (
+              <iframe
+                src={webPreviewUrl}
+                title={title}
+                className="w-full h-[70vh] rounded-xl border border-slate-800 shadow-inner bg-white"
+              />
+            )}
+          </div>
+        )}
 
         {/* Loading / Downloading / Opening Progress State */}
         {(status === "downloading" || status === "opening") && (
@@ -173,8 +213,8 @@ export default function PdfViewer({
           </div>
         )}
 
-        {/* Success / Opened State */}
-        {status === "opened" && (
+        {/* Success / Opened State for non-webPreview */}
+        {status === "opened" && !webPreviewUrl && (
           <div className="flex flex-col items-center gap-2 text-emerald-400 animate-fadeIn">
             <CheckCircle2 className="w-7 h-7" />
             <span className="text-xs font-bold text-slate-200">

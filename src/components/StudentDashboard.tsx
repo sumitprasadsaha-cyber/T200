@@ -71,7 +71,7 @@ import { Student, ChapterNote } from "../types";
 import { ALL_ACADEMIC_MONTHS, MONTH_NAMES } from "../utils/monthHelper";
 import { groupAndSortChapterNotes, getFormattedTopicLabel, isFileNameRedundant } from "../utils/chapterNotesHelper";
 import { subscribeToAnnouncements, saveStudentDoc, subscribeToClassNotes, getLocalClassNotes, areClassNotesEqual, updateStudentPresence } from "../lib/firestoreService";
-import { uploadReportToStorage, downloadFileFromStorage, getBucketName, sanitizeStoragePath } from "../lib/storageService";
+import { uploadReportToStorage, getBucketName, sanitizeStoragePath } from "../lib/storageService";
 import PdfViewer from "./PdfViewer";
 import ConfirmDeleteModal from "./ConfirmDeleteModal";
 import { getPdfDownloadUrl } from "../lib/pdfService";
@@ -1609,8 +1609,6 @@ export function StudentMyTab({
     fileType?: "pdf" | "image" | string;
   } | null>(null);
   const [openingNoteId, setOpeningNoteId] = useState<string | null>(null);
-  const [downloadingNoteId, setDownloadingNoteId] = useState<string | null>(null);
-  const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState<boolean>(false);
   const [progressModalNote, setProgressModalNote] = useState<ChapterNote | null>(null);
   const [reportModalData, setReportModalData] = useState<SubjectReportData | null>(null);
@@ -1882,71 +1880,6 @@ export function StudentMyTab({
       mimeType: note.mimeType,
       fileType: note.fileType
     });
-  };
-
-  const handleDownloadPdf = async (note: ChapterNote) => {
-    if (!isAdmin) {
-      if (currentTabServiceStatus === "paused") {
-        alert("Your learning services are temporarily paused. Please contact the academy for assistance.");
-        return;
-      }
-      if (currentTabServiceStatus === "ended") {
-        alert("Your academy services have ended. Please contact the administrator if you believe this is an error.");
-        return;
-      }
-    }
-    if (!note.pdfUrl) return;
-    if (downloadingNoteId) return; // Prevent concurrent/duplicate downloads
-    
-    setDownloadingNoteId(note.id);
-    setDownloadProgress(0);
-    
-    let url = note.pdfUrl;
-    let fileName = note.pdfFileName || note.fileName || `${note.chapterName.replace(/\s+/g, "_")}.pdf`;
-    if (!fileName.endsWith(".pdf")) fileName += ".pdf";
-
-    // Handle inline Base64 data URLs
-    if (url.startsWith("data:") || url.startsWith("JVBERi")) {
-      try {
-        setDownloadProgress(50);
-        const blob = await dataUrlToBlob(url);
-        setDownloadProgress(100);
-        
-        const blobUrl = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = blobUrl;
-        link.download = fileName;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(blobUrl);
-      } catch (err: any) {
-        console.error("Error parsing Base64 PDF:", err);
-        alert("Unable to download notes. Please try again.");
-      } finally {
-        setDownloadingNoteId(null);
-        setDownloadProgress(0);
-      }
-      return;
-    }
-
-    // Handle Supabase Storage/Firebase Paths
-    const bucket = getBucketName(note.bucket);
-    const storagePath = sanitizeStoragePath(note.storagePath || note.pdfUrl, bucket);
-
-    try {
-      setDownloadProgress(50);
-      console.log(`[StudentDashboard] Downloading note PDF: bucket="${bucket}", path="${storagePath}"`);
-      await downloadFileFromStorage(bucket, storagePath, fileName);
-      setDownloadProgress(100);
-      console.log(`[StudentDashboard] Successfully downloaded: ${fileName}`);
-    } catch (downloadError: any) {
-      console.error("[StudentDashboard] Supabase download failed:", downloadError);
-      alert("Unable to download notes. Please try again.");
-    } finally {
-      setDownloadingNoteId(null);
-      setDownloadProgress(0);
-    }
   };
 
   const getFileSizeStr = (pdfUrl: string, chapterNo: number) => {

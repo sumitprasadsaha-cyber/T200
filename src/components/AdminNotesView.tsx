@@ -23,7 +23,7 @@ import {
   Loader2
 } from "lucide-react";
 import { ClassNote, Student } from "../types";
-import { uploadFileToSupabase, deleteFileFromStorage, downloadFileFromStorage } from "../lib/storageService";
+import { uploadFileToSupabase, deleteFileFromStorage } from "../lib/storageService";
 import { saveClassNoteDoc, deleteClassNoteDoc } from "../lib/firestoreService";
 import { groupClassNotesHierarchy, normalizeClassGrade, isClassGradeMatching, isSubjectMatching } from "../utils/classNoteHelper";
 import { getFormattedTopicLabel, isFileNameRedundant } from "../utils/chapterNotesHelper";

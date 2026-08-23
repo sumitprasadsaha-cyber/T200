@@ -27,7 +27,7 @@ import {
   AlertCircle
 } from "lucide-react";
 import { ChapterNote, Student, TestAttemptRecord } from "../types";
-import { uploadPdfToStorage, downloadFileFromStorage, sanitizeStoragePath, getBucketName } from "../lib/storageService";
+import { uploadPdfToStorage, sanitizeStoragePath, getBucketName } from "../lib/storageService";
 import PdfViewer from "./PdfViewer";
 import { isImageFile } from "../lib/nativePdfService";
 import ConfirmDeleteModal from "./ConfirmDeleteModal";
