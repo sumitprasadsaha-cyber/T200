@@ -37,7 +37,7 @@ const inFlightOperations = new Map<string, Promise<OpenPdfResult>>();
 // Web in-memory object URL cache
 const webBlobCache = new Map<string, { blob: Blob; objectUrl: string }>();
 
-// Debounce mutex to ensure native activity or file viewer is opened exactly once
+// Debounce mutex to ensure native activity or file viewer is opened cleanly
 let lastViewerLaunchTimestamp = 0;
 let isLaunchingViewerMutex = false;
 
@@ -147,7 +147,7 @@ async function validatePdfHeader(blob: Blob): Promise<boolean> {
 }
 
 /**
- * Checks if running in a native Capacitor / Cordova mobile environment.
+ * Checks if running in a native Capacitor mobile environment (Android or iOS).
  */
 export function isNativePlatform(): boolean {
   if (typeof Capacitor !== "undefined") {
@@ -158,14 +158,10 @@ export function isNativePlatform(): boolean {
     if (platform === "android" || platform === "ios") {
       return true;
     }
-    if (Capacitor.isPluginAvailable?.("FileOpener") || Capacitor.isPluginAvailable?.("Filesystem")) {
-      return true;
-    }
   }
   if (typeof window !== "undefined") {
     if (Boolean((window as any).Capacitor?.isNativePlatform?.())) return true;
     if (Boolean((window as any).AndroidBridge)) return true;
-    if (Boolean((window as any).cordova)) return true;
   }
   return false;
 }
@@ -187,12 +183,12 @@ async function streamFetchFromSupabaseStorage(
   bucket: string,
   storagePath: string,
   onProgress?: (percent: number, label: string) => void,
-  timeoutMs = 20000
+  timeoutMs = 25000
 ): Promise<{ blob: Blob | null; status: number }> {
   const { url: supabaseUrl, anonKey } = getSupabaseConfig();
   const encodedPath = encodeStoragePath(storagePath);
 
-  // Try authenticated REST endpoint first, then public endpoint
+  // Target URLs: Authenticated REST endpoint first, then public endpoint
   const targetUrls = [
     `${supabaseUrl}/storage/v1/object/authenticated/${bucket}/${encodedPath}`,
     `${supabaseUrl}/storage/v1/object/public/${bucket}/${encodedPath}`
@@ -239,7 +235,7 @@ async function streamFetchFromSupabaseStorage(
       }
     }
 
-    // Fetch stream fallback if XMLHttpRequest is unavailable or failed with status 0
+    // Fetch stream fallback if XMLHttpRequest is unavailable or failed
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -295,7 +291,7 @@ async function streamFetchFromSupabaseStorage(
 
   // Final fallback: Use Supabase JS Storage SDK download()
   try {
-    console.log(`[NativePdfService] Using Supabase SDK fallback download for bucket="${bucket}", path="${storagePath}"`);
+    console.log(`[NativePdfService] Using Supabase SDK download for bucket="${bucket}", path="${storagePath}"`);
     const sdkRes = await withTimeout<{ data: Blob | null; error: any }>(
       supabase.storage.from(bucket).download(storagePath),
       timeoutMs,
@@ -315,7 +311,7 @@ async function streamFetchFromSupabaseStorage(
 /**
  * Launch native file viewer intent exactly once with debounce protection.
  */
-async function launchNativeViewerOnce(uri: string, contentType: string, _isImg: boolean): Promise<void> {
+async function launchNativeViewerOnce(uri: string, contentType: string): Promise<void> {
   const now = Date.now();
   if (isLaunchingViewerMutex || now - lastViewerLaunchTimestamp < 2500) {
     // Avoid duplicate intent launches if tapped repeatedly
@@ -328,13 +324,11 @@ async function launchNativeViewerOnce(uri: string, contentType: string, _isImg: 
     await FileOpener.open({
       filePath: uri,
       contentType: contentType,
-      openWithDefault: false,
     });
   } catch (openerErr: any) {
     console.warn("[NativePdfService] Native FileOpener error:", openerErr);
-    throw new Error(USER_FRIENDLY_NOTE_ERROR);
+    throw openerErr;
   } finally {
-    // Keep mutex locked for 1.5s to prevent immediate re-entry
     setTimeout(() => {
       isLaunchingViewerMutex = false;
     }, 1500);
@@ -443,10 +437,10 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
 
       if (isNative) {
         try {
-          await launchNativeViewerOnce(cacheCheck.uri, contentType, isImg);
+          await launchNativeViewerOnce(cacheCheck.uri, contentType);
           return { success: true, cachedPath: cacheCheck.uri, isNative: true };
         } catch (openerErr: any) {
-          console.warn("[NativePdfService] Opener failed on cached file, removing corrupted cache:", openerErr);
+          console.warn("[NativePdfService] Opener failed on cached file, removing cache and retrying:", openerErr);
           await Filesystem.deleteFile({ path: cacheFileName, directory: Directory.Cache }).catch(() => {});
           if (!isRetry) {
             return executeOperation(true);
@@ -455,11 +449,15 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
         }
       } else {
         const cached = webBlobCache.get(cacheFileName);
+        const objUrl = cacheCheck.uri || (cached?.blob ? URL.createObjectURL(cached.blob) : "");
+        if (objUrl && typeof window !== "undefined") {
+          window.open(objUrl, "_blank", "noopener,noreferrer");
+        }
         return {
           success: true,
           isNative: false,
           cachedPath: cacheCheck.uri,
-          objectUrl: cacheCheck.uri,
+          objectUrl: objUrl,
           blob: cached?.blob
         };
       }
@@ -482,7 +480,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
         activeBucket,
         activePath,
         updateProgress,
-        20000
+        25000
       );
       if (streamRes.blob && streamRes.blob.size > 0) {
         pdfBlob = streamRes.blob;
@@ -496,7 +494,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
 
     // Validation: Downloaded blob must exist and not be empty
     if (!pdfBlob || pdfBlob.size <= 0) {
-      console.error("[NativePdfService] Supabase Storage download failed:", {
+      console.error("[NativePdfService] Supabase Storage download returned empty or failed:", {
         noteId,
         bucket: activeBucket,
         storagePath: activePath,
@@ -541,7 +539,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
             directory: Directory.Cache,
             recursive: true,
           }),
-          10000,
+          15000,
           "Failed to write note to cache"
         );
 
@@ -562,21 +560,23 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
         });
 
         // Step 4: Open native PDF / Image viewer
-        await launchNativeViewerOnce(uriResult.uri, contentType, isImg);
+        await launchNativeViewerOnce(uriResult.uri, contentType);
 
         return { success: true, cachedPath: uriResult.uri, isNative: true };
-      } catch (saveErr) {
-        console.error("[NativePdfService] Error saving or opening cached file:", saveErr);
-        await Filesystem.deleteFile({ path: cacheFileName, directory: Directory.Cache }).catch(() => {});
+      } catch (nativeErr: any) {
+        console.error("[NativePdfService] Error in native save/open pipeline:", nativeErr);
         if (!isRetry) {
           return executeOperation(true);
         }
         throw new Error(USER_FRIENDLY_NOTE_ERROR);
       }
     } else {
-      // Web / in-app preview: keep in web memory cache
+      // Web preview: cache in memory and open in safe tab
       const objectUrl = URL.createObjectURL(pdfBlob);
       webBlobCache.set(cacheFileName, { blob: pdfBlob, objectUrl });
+      if (typeof window !== "undefined") {
+        window.open(objectUrl, "_blank", "noopener,noreferrer");
+      }
       return { success: true, isNative: false, objectUrl, blob: pdfBlob, cachedPath: objectUrl };
     }
   };
@@ -606,9 +606,9 @@ export async function saveAndOpenGeneratedPdf(pdfBlob: Blob, fileName: string): 
       path: fileName,
       directory: Directory.Cache,
     });
-    await launchNativeViewerOnce(uriResult.uri, "application/pdf", false);
+    await launchNativeViewerOnce(uriResult.uri, "application/pdf");
   } else {
-    // Web direct export for generated financial / audit receipts
+    // Web direct export for generated receipts
     const url = URL.createObjectURL(pdfBlob);
     const a = document.createElement("a");
     a.href = url;
