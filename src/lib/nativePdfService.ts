@@ -143,9 +143,44 @@ async function validatePdfHeader(blob: Blob): Promise<boolean> {
 }
 
 /**
+ * Checks if running in a native Capacitor / Cordova mobile environment.
+ */
+export function isNativePlatform(): boolean {
+  if (typeof Capacitor !== "undefined") {
+    if (typeof Capacitor.isNativePlatform === "function" && Capacitor.isNativePlatform()) {
+      return true;
+    }
+    const platform = typeof Capacitor.getPlatform === "function" ? Capacitor.getPlatform() : "";
+    if (platform === "android" || platform === "ios") {
+      return true;
+    }
+  }
+  if (typeof window !== "undefined") {
+    if (Boolean((window as any).Capacitor?.isNativePlatform?.())) return true;
+    if (Boolean((window as any).AndroidBridge)) return true;
+    if (Boolean((window as any).cordova)) return true;
+  }
+  return false;
+}
+
+/**
+ * Downloads a Blob directly on web without opening any browser popup or blank tab.
+ */
+export function downloadBlobDirectly(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/**
  * Launch native file viewer intent exactly once with debounce protection.
  */
-async function launchNativeViewerOnce(uri: string, contentType: string, isImg: boolean): Promise<void> {
+async function launchNativeViewerOnce(uri: string, contentType: string, _isImg: boolean): Promise<void> {
   const now = Date.now();
   if (isLaunchingViewerMutex || now - lastViewerLaunchTimestamp < 2500) {
     // Avoid double intent launches if tapped repeatedly
@@ -161,19 +196,8 @@ async function launchNativeViewerOnce(uri: string, contentType: string, isImg: b
       openWithDefault: false,
     });
   } catch (openerErr: any) {
-    const errStr = String(openerErr?.message || openerErr).toLowerCase();
     console.warn("[NativePdfService] Native FileOpener error:", openerErr);
-
-    if (
-      errStr.includes("no app") ||
-      errStr.includes("activitynotfound") ||
-      errStr.includes("not found") ||
-      errStr.includes("no handler") ||
-      errStr.includes("cannot open")
-    ) {
-      throw new Error("Unable to open this note. Please contact your teacher.");
-    }
-    throw new Error("Unable to open this note. Please contact your teacher.");
+    throw new Error("Unable to open note. Please try again.");
   } finally {
     // Keep mutex locked for 1.5s to prevent immediate re-entry
     setTimeout(() => {
@@ -186,7 +210,8 @@ async function launchNativeViewerOnce(uri: string, contentType: string, isImg: b
  * Checks if the file already exists in cache with a strict timeout so the UI never hangs.
  */
 async function checkLocalCache(cacheFileName: string): Promise<{ exists: boolean; uri?: string; size?: number }> {
-  if (!Capacitor.isNativePlatform()) {
+  const isNative = isNativePlatform();
+  if (!isNative) {
     const cached = webBlobCache.get(cacheFileName);
     if (cached && cached.objectUrl) {
       return { exists: true, uri: cached.objectUrl, size: cached.blob.size };
@@ -202,13 +227,13 @@ async function checkLocalCache(cacheFileName: string): Promise<{ exists: boolean
       "Cache check timed out"
     );
 
-    if (statResult && statResult.size > 0) {
+    if (statResult && ((statResult as any).size > 0 || (statResult as any).type === "file")) {
       const uriResult = await withTimeout(
         Filesystem.getUri({ path: cacheFileName, directory: Directory.Cache }),
         1500,
         "Get URI timed out"
       );
-      return { exists: true, uri: uriResult.uri, size: statResult.size };
+      return { exists: true, uri: uriResult.uri, size: (statResult as any).size || 1 };
     }
   } catch {
     // Cache miss or timeout -> proceed to download
@@ -219,11 +244,11 @@ async function checkLocalCache(cacheFileName: string): Promise<{ exists: boolean
 /**
  * Main function: Opens a Note PDF or Image.
  * Flow:
- * 1. Look for cached file. If cache exists -> open immediately.
- * 2. If cache does not exist: Fetch from Supabase Storage using exact stored path -> save locally -> open viewer.
+ * 1. Look for cached file. If cache exists -> open immediately via native viewer.
+ * 2. If cache does not exist: Fetch from Supabase Storage -> save locally -> open viewer directly.
  * 3. Never performs duplicate downloads or multiple viewer launches.
- * 4. User-facing status messages strictly: "Preparing Note…", "Downloading…", "Opening…".
- * 5. Detailed diagnostic logging in developer console only.
+ * 4. Never uses window.open, target="_blank", or browser popups.
+ * 5. User-facing status messages strictly: "Preparing Note…", "Downloading…", "Opening…".
  */
 export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<OpenPdfResult> {
   const { url, storagePath, bucket, noteId, fileName, mimeType, fileType, onProgress } = options;
@@ -234,7 +259,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
 
   if (!url && !storagePath) {
     console.error("[NativePdfService] Missing note file location or URL:", { noteId, storagePath, url });
-    throw new Error("Unable to open this note. Please contact your teacher.");
+    throw new Error("Unable to open note. Please try again.");
   }
 
   const isImg = isImageFile(fileName, url || storagePath, mimeType, fileType);
@@ -252,7 +277,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
   }
 
   const executeOperation = async (isRetry = false): Promise<OpenPdfResult> => {
-    const isNative = Capacitor.isNativePlatform();
+    const isNative = isNativePlatform();
 
     // Step 1: Look for cached file
     updateProgress(20, "Preparing Note…");
@@ -283,10 +308,13 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
           if (!isRetry) {
             return executeOperation(true);
           }
-          throw openerErr;
+          throw new Error("Unable to open note. Please try again.");
         }
       } else {
-        window.open(cacheCheck.uri, "_blank");
+        const cached = webBlobCache.get(cacheFileName);
+        if (cached?.blob) {
+          downloadBlobDirectly(cached.blob, fileName || `${cacheFileName}.${ext}`);
+        }
         updateProgress(100, "Opening…");
         return { success: true, isNative: false };
       }
@@ -436,7 +464,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
         cacheHit: false,
         exception: lastError || "Storage object not found or empty"
       });
-      throw new Error("Unable to open this note. Please contact your teacher.");
+      throw new Error("Unable to open note. Please try again.");
     }
 
     // Validate document magic bytes
@@ -451,7 +479,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
           downloadSize: pdfBlob.size,
           mimeType: pdfBlob.type
         });
-        throw new Error("Unable to open this note. Please contact your teacher.");
+        throw new Error("Unable to open note. Please try again.");
       }
     }
 
@@ -495,12 +523,12 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
       updateProgress(100, "Opening…");
       return { success: true, cachedPath: uriResult.uri, isNative: true };
     } else {
-      // Web / Browser Preview
+      // Web fallback: download directly without popup/new tab
       const objectUrl = URL.createObjectURL(pdfBlob);
       webBlobCache.set(cacheFileName, { blob: pdfBlob, objectUrl });
 
       updateProgress(95, "Opening…");
-      window.open(objectUrl, "_blank");
+      downloadBlobDirectly(pdfBlob, fileName || `${cacheFileName}.${ext}`);
       updateProgress(100, "Opening…");
       return { success: true, isNative: false };
     }
@@ -518,7 +546,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
  * Saves and opens a client-side generated PDF blob on native Android or web.
  */
 export async function saveAndOpenGeneratedPdf(pdfBlob: Blob, fileName: string): Promise<void> {
-  const isNative = typeof Capacitor !== "undefined" && Capacitor.isNativePlatform();
+  const isNative = isNativePlatform();
   if (isNative) {
     const base64Data = await blobToBase64(pdfBlob);
     await Filesystem.writeFile({
@@ -533,14 +561,6 @@ export async function saveAndOpenGeneratedPdf(pdfBlob: Blob, fileName: string): 
     });
     await launchNativeViewerOnce(uriResult.uri, "application/pdf", false);
   } else {
-    const url = URL.createObjectURL(pdfBlob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.target = "_blank";
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    downloadBlobDirectly(pdfBlob, fileName);
   }
 }

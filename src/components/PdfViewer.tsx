@@ -109,7 +109,7 @@ export default function PdfViewer({
       console.error("[PdfViewer Modal] Error opening document:", err);
       if (!isMountedRef.current) return;
       setStatus("error");
-      setError("Unable to open this note. Please contact your teacher.");
+      setError("Unable to open note. Please try again.");
     } finally {
       isExecutingRef.current = false;
     }

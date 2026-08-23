@@ -314,9 +314,7 @@ export async function generateSubjectPdfReport(student: Student, subject: string
     try {
       doc.save(fileName);
     } catch (e) {
-      console.error("[PDF Generator] Fallback failed:", e);
-      const string = doc.output("datauristring");
-      window.open(string, "_blank");
+      console.error("[PDF Generator] Fallback save failed:", e);
     }
   }
 
