@@ -2,10 +2,13 @@ import { Filesystem, Directory } from "@capacitor/filesystem";
 import { FileOpener } from "@capacitor-community/file-opener";
 import { Capacitor } from "@capacitor/core";
 import { getBucketName, sanitizeStoragePath } from "./storageService";
-import { supabase } from "./supabaseClient";
+import { supabase, getSupabaseConfig } from "./supabaseClient";
 import { dataUrlToBlob } from "../utils/pdfUtils";
 
 export type NoteViewerState = "idle" | "downloading" | "opening" | "opened" | "error";
+
+export const USER_FRIENDLY_NOTE_ERROR =
+  "Unable to download note. Please check your internet connection and try again.";
 
 export interface OpenPdfOptions {
   url: string;
@@ -34,7 +37,7 @@ const inFlightOperations = new Map<string, Promise<OpenPdfResult>>();
 // Web in-memory object URL cache
 const webBlobCache = new Map<string, { blob: Blob; objectUrl: string }>();
 
-// Debounce mutex to ensure native activity or browser tab is opened exactly once
+// Debounce mutex to ensure native activity or file viewer is opened exactly once
 let lastViewerLaunchTimestamp = 0;
 let isLaunchingViewerMutex = false;
 
@@ -91,7 +94,6 @@ export function getMimeType(fileNameOrUrl: string, mimeType?: string, isImg?: bo
 
 /**
  * Generates a deterministic, filesystem-safe filename for caching a PDF or Image in Directory.Cache.
- * Includes noteId and full rawPathOrUrl so if the remote URL or file version changes, the cache is automatically refreshed.
  */
 export function getPdfCacheFileName(rawPathOrUrl: string, noteId?: string, isImg?: boolean, ext?: string): string {
   const identifier = `${noteId || "doc"}_${rawPathOrUrl || ""}`;
@@ -107,11 +109,11 @@ export function getPdfCacheFileName(rawPathOrUrl: string, noteId?: string, isImg
   }
   const safeHash = Math.abs(hash).toString(36);
 
+  const extension = ext ? ext.replace(/^\./, "") : isImg ? "jpg" : "pdf";
   if (isImg) {
-    const extension = ext ? ext.replace(/^\./, "") : "jpg";
     return `img_cache_${cleanSlug}_${safeHash}.${extension}`;
   }
-  return `pdf_cache_${cleanSlug}_${safeHash}.pdf`;
+  return `pdf_cache_${cleanSlug}_${safeHash}.${extension}`;
 }
 
 /**
@@ -169,86 +171,145 @@ export function isNativePlatform(): boolean {
 }
 
 /**
- * Fetches a URL with real byte progress tracking via XMLHttpRequest or fetch ReadableStream.
+ * Encodes each segment of a storage path safely for HTTP URLs.
  */
-async function fetchBlobWithByteProgress(
-  url: string,
+function encodeStoragePath(rawPath: string): string {
+  return rawPath
+    .split("/")
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
+}
+
+/**
+ * Fetches file directly from Supabase Storage with exact byte streaming progress.
+ */
+async function streamFetchFromSupabaseStorage(
+  bucket: string,
+  storagePath: string,
   onProgress?: (percent: number, label: string) => void,
-  timeoutMs = 15000
+  timeoutMs = 20000
 ): Promise<{ blob: Blob | null; status: number }> {
-  if (typeof XMLHttpRequest !== "undefined") {
-    return new Promise((resolve) => {
-      try {
-        const xhr = new XMLHttpRequest();
-        xhr.open("GET", url, true);
-        xhr.responseType = "blob";
-        xhr.timeout = timeoutMs;
+  const { url: supabaseUrl, anonKey } = getSupabaseConfig();
+  const encodedPath = encodeStoragePath(storagePath);
 
-        xhr.onprogress = (event) => {
-          if (event.lengthComputable && event.total > 0 && onProgress) {
-            const percent = Math.min(99, Math.max(0, Math.round((event.loaded / event.total) * 100)));
-            onProgress(percent, "Downloading…");
+  // Try authenticated REST endpoint first, then public endpoint
+  const targetUrls = [
+    `${supabaseUrl}/storage/v1/object/authenticated/${bucket}/${encodedPath}`,
+    `${supabaseUrl}/storage/v1/object/public/${bucket}/${encodedPath}`
+  ];
+
+  for (const url of targetUrls) {
+    if (typeof XMLHttpRequest !== "undefined") {
+      const xhrResult = await new Promise<{ blob: Blob | null; status: number }>((resolve) => {
+        try {
+          const xhr = new XMLHttpRequest();
+          xhr.open("GET", url, true);
+          if (anonKey) {
+            xhr.setRequestHeader("apikey", anonKey);
+            xhr.setRequestHeader("Authorization", `Bearer ${anonKey}`);
           }
-        };
+          xhr.responseType = "blob";
+          xhr.timeout = timeoutMs;
 
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300 && xhr.response instanceof Blob && xhr.response.size > 0) {
-            resolve({ blob: xhr.response, status: xhr.status });
-          } else {
-            resolve({ blob: null, status: xhr.status });
-          }
-        };
+          xhr.onprogress = (event) => {
+            if (event.lengthComputable && event.total > 0 && onProgress) {
+              const percent = Math.min(99, Math.max(0, Math.round((event.loaded / event.total) * 100)));
+              onProgress(percent, "Downloading…");
+            }
+          };
 
-        xhr.onerror = () => resolve({ blob: null, status: 0 });
-        xhr.ontimeout = () => resolve({ blob: null, status: 408 });
-        xhr.send();
-      } catch {
-        resolve({ blob: null, status: 0 });
-      }
-    });
-  }
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300 && xhr.response instanceof Blob && xhr.response.size > 0) {
+              resolve({ blob: xhr.response, status: xhr.status });
+            } else {
+              resolve({ blob: null, status: xhr.status });
+            }
+          };
 
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const response = await fetch(url, { signal: controller.signal });
-    clearTimeout(timer);
-    if (!response.ok) return { blob: null, status: response.status };
-
-    const contentLength = response.headers.get("content-length");
-    const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
-
-    if (response.body && totalBytes > 0) {
-      const reader = response.body.getReader();
-      let receivedBytes = 0;
-      const chunks: Uint8Array[] = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) {
-          chunks.push(value);
-          receivedBytes += value.length;
-          const percent = Math.min(99, Math.round((receivedBytes / totalBytes) * 100));
-          if (onProgress) onProgress(percent, "Downloading…");
+          xhr.onerror = () => resolve({ blob: null, status: 0 });
+          xhr.ontimeout = () => resolve({ blob: null, status: 408 });
+          xhr.send();
+        } catch {
+          resolve({ blob: null, status: 0 });
         }
+      });
+
+      if (xhrResult.blob && xhrResult.blob.size > 0) {
+        return xhrResult;
       }
-      const all = new Uint8Array(receivedBytes);
-      let offset = 0;
-      for (const c of chunks) {
-        all.set(c, offset);
-        offset += c.length;
-      }
-      return {
-        blob: new Blob([all], { type: response.headers.get("content-type") || "application/pdf" }),
-        status: response.status
-      };
     }
 
-    const fetchedBlob = await response.blob();
-    return { blob: fetchedBlob, status: response.status };
-  } catch {
-    return { blob: null, status: 0 };
+    // Fetch stream fallback if XMLHttpRequest is unavailable or failed with status 0
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const headers: Record<string, string> = {};
+      if (anonKey) {
+        headers["apikey"] = anonKey;
+        headers["Authorization"] = `Bearer ${anonKey}`;
+      }
+
+      const response = await fetch(url, { signal: controller.signal, headers });
+      clearTimeout(timer);
+
+      if (response.ok) {
+        const contentLength = response.headers.get("content-length");
+        const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+
+        if (response.body && totalBytes > 0) {
+          const reader = response.body.getReader();
+          let receivedBytes = 0;
+          const chunks: Uint8Array[] = [];
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) {
+              chunks.push(value);
+              receivedBytes += value.length;
+              const percent = Math.min(99, Math.round((receivedBytes / totalBytes) * 100));
+              if (onProgress) onProgress(percent, "Downloading…");
+            }
+          }
+          const all = new Uint8Array(receivedBytes);
+          let offset = 0;
+          for (const c of chunks) {
+            all.set(c, offset);
+            offset += c.length;
+          }
+          const mimeType = response.headers.get("content-type") || "application/octet-stream";
+          return {
+            blob: new Blob([all], { type: mimeType }),
+            status: response.status
+          };
+        }
+
+        const fetchedBlob = await response.blob();
+        if (fetchedBlob && fetchedBlob.size > 0) {
+          return { blob: fetchedBlob, status: response.status };
+        }
+      }
+    } catch {
+      // Continue to fallback
+    }
   }
+
+  // Final fallback: Use Supabase JS Storage SDK download()
+  try {
+    console.log(`[NativePdfService] Using Supabase SDK fallback download for bucket="${bucket}", path="${storagePath}"`);
+    const sdkRes = await withTimeout<{ data: Blob | null; error: any }>(
+      supabase.storage.from(bucket).download(storagePath),
+      timeoutMs,
+      "Supabase SDK download timeout"
+    );
+    if (!sdkRes.error && sdkRes.data && sdkRes.data.size > 0) {
+      if (onProgress) onProgress(100, "Downloading…");
+      return { blob: sdkRes.data, status: 200 };
+    }
+  } catch (sdkErr) {
+    console.warn("[NativePdfService] Supabase SDK download exception:", sdkErr);
+  }
+
+  return { blob: null, status: 0 };
 }
 
 /**
@@ -257,7 +318,7 @@ async function fetchBlobWithByteProgress(
 async function launchNativeViewerOnce(uri: string, contentType: string, _isImg: boolean): Promise<void> {
   const now = Date.now();
   if (isLaunchingViewerMutex || now - lastViewerLaunchTimestamp < 2500) {
-    // Avoid double intent launches if tapped repeatedly
+    // Avoid duplicate intent launches if tapped repeatedly
     return;
   }
   isLaunchingViewerMutex = true;
@@ -271,7 +332,7 @@ async function launchNativeViewerOnce(uri: string, contentType: string, _isImg: 
     });
   } catch (openerErr: any) {
     console.warn("[NativePdfService] Native FileOpener error:", openerErr);
-    throw new Error("Unable to open note. Please try again.");
+    throw new Error(USER_FRIENDLY_NOTE_ERROR);
   } finally {
     // Keep mutex locked for 1.5s to prevent immediate re-entry
     setTimeout(() => {
@@ -281,36 +342,47 @@ async function launchNativeViewerOnce(uri: string, contentType: string, _isImg: 
 }
 
 /**
- * Checks if the file already exists in cache with a strict timeout so the UI never hangs.
+ * Checks if the file already exists in local cache with size and extension validation.
+ * If file is corrupted (size <= 0), it is automatically deleted.
  */
-async function checkLocalCache(cacheFileName: string): Promise<{ exists: boolean; uri?: string; size?: number }> {
+async function checkAndValidateLocalCache(
+  cacheFileName: string,
+  expectedExt: string
+): Promise<{ exists: boolean; uri?: string; size?: number }> {
   const isNative = isNativePlatform();
   if (!isNative) {
     const cached = webBlobCache.get(cacheFileName);
-    if (cached && cached.objectUrl) {
+    if (cached && cached.objectUrl && cached.blob.size > 0) {
       return { exists: true, uri: cached.objectUrl, size: cached.blob.size };
     }
     return { exists: false };
   }
 
   try {
-    // Timeout of 1500ms prevents any bridge/stat freeze
     const statResult = await withTimeout(
       Filesystem.stat({ path: cacheFileName, directory: Directory.Cache }),
       1500,
       "Cache check timed out"
     );
 
-    if (statResult && ((statResult as any).size > 0 || (statResult as any).type === "file")) {
+    const fileSize = (statResult as any)?.size ?? 0;
+    const fileType = (statResult as any)?.type ?? "";
+    const hasValidExt = cacheFileName.toLowerCase().endsWith(`.${expectedExt.toLowerCase()}`);
+
+    if (statResult && fileSize > 0 && fileType === "file" && hasValidExt) {
       const uriResult = await withTimeout(
         Filesystem.getUri({ path: cacheFileName, directory: Directory.Cache }),
         1500,
         "Get URI timed out"
       );
-      return { exists: true, uri: uriResult.uri, size: (statResult as any).size || 1 };
+      return { exists: true, uri: uriResult.uri, size: fileSize };
     }
+
+    // Corrupted cache file detected -> delete it immediately
+    console.warn(`[NativePdfService] Corrupted cache detected for ${cacheFileName} (size: ${fileSize}), removing.`);
+    await Filesystem.deleteFile({ path: cacheFileName, directory: Directory.Cache }).catch(() => {});
   } catch {
-    // Cache miss or timeout -> proceed to download
+    // Cache miss or stat error
   }
   return { exists: false };
 }
@@ -318,11 +390,12 @@ async function checkLocalCache(cacheFileName: string): Promise<{ exists: boolean
 /**
  * Main function: Opens a Note PDF or Image.
  * Flow:
- * 1. Look for cached file. If cache exists -> open immediately via native viewer.
- * 2. If cache does not exist: Fetch from Supabase Storage -> save locally -> open viewer directly.
- * 3. Never performs duplicate downloads or multiple viewer launches.
- * 4. Never uses window.open, target="_blank", or browser popups.
- * 5. User-facing status messages strictly: "Preparing Note…", "Downloading…", "Opening…".
+ * 1. Check local cache (verify size > 0 and extension). If valid -> open immediately via native viewer.
+ * 2. If corrupted or missing: Delete corrupted file and download directly from Supabase Storage.
+ * 3. Stream download with real byte progress (0% -> 100%).
+ * 4. Save to local cache and verify integrity (size > 0).
+ * 5. Open using native PDF / Image viewer.
+ * 6. Never open browser download URLs or show popup-based note viewers.
  */
 export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<OpenPdfResult> {
   const { url, storagePath, bucket, noteId, fileName, mimeType, fileType, onProgress } = options;
@@ -333,7 +406,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
 
   if (!url && !storagePath) {
     console.error("[NativePdfService] Missing note file location or URL:", { noteId, storagePath, url });
-    throw new Error("Unable to open note. Please try again.");
+    throw new Error(USER_FRIENDLY_NOTE_ERROR);
   }
 
   const isImg = isImageFile(fileName, url || storagePath, mimeType, fileType);
@@ -356,11 +429,10 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
     // Step 1: Look for cached file
     updateProgress(0, "Preparing Note…");
 
-    const cacheCheck = await checkLocalCache(cacheFileName);
+    const cacheCheck = await checkAndValidateLocalCache(cacheFileName, ext);
     if (cacheCheck.exists && cacheCheck.uri) {
-      console.log("[NativePdfService] CACHE_HIT", {
-        topicId: noteId,
-        noteId: noteId,
+      console.log("[NativePdfService] CACHE_HIT - opening directly:", {
+        noteId,
         bucket: activeBucket,
         storagePath: activePath,
         cacheFileName,
@@ -375,13 +447,11 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
           return { success: true, cachedPath: cacheCheck.uri, isNative: true };
         } catch (openerErr: any) {
           console.warn("[NativePdfService] Opener failed on cached file, removing corrupted cache:", openerErr);
-          try {
-            await Filesystem.deleteFile({ path: cacheFileName, directory: Directory.Cache });
-          } catch {}
+          await Filesystem.deleteFile({ path: cacheFileName, directory: Directory.Cache }).catch(() => {});
           if (!isRetry) {
             return executeOperation(true);
           }
-          throw new Error("Unable to open note. Please try again.");
+          throw new Error(USER_FRIENDLY_NOTE_ERROR);
         }
       } else {
         const cached = webBlobCache.get(cacheFileName);
@@ -395,193 +465,118 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
       }
     }
 
-    console.log("[NativePdfService] CACHE_MISS", {
-      topicId: noteId,
-      noteId: noteId,
+    console.log("[NativePdfService] CACHE_MISS - fetching from Supabase Storage:", {
+      noteId,
       bucket: activeBucket,
       storagePath: activePath,
       cacheFileName
     });
 
-    // Step 2: Fetch from Supabase Storage
+    // Step 2: Fetch directly from Supabase Storage with real byte progress
     updateProgress(0, "Downloading…");
 
     let pdfBlob: Blob | null = null;
-    let generatedUrl = "";
-    let httpStatus = 0;
-    let lastError: any = null;
 
-    // 2a. Primary: Direct Supabase Storage SDK download using exact stored storage path
     if (activePath && !url.startsWith("data:") && !url.startsWith("blob:")) {
-      try {
-        console.log(`[NativePdfService] Tier 1: Supabase SDK download bucket="${activeBucket}", path="${activePath}"`);
-        const sdkRes = await withTimeout<{ data: Blob | null; error: any }>(
-          supabase.storage.from(activeBucket).download(activePath),
-          15000,
-          "Supabase download timed out"
-        );
-
-        if (!sdkRes.error && sdkRes.data && sdkRes.data.size > 0) {
-          pdfBlob = sdkRes.data;
-          httpStatus = 200;
-          updateProgress(100, "Opening…");
-          console.log(`[NativePdfService] Tier 1 SDK download succeeded: ${pdfBlob.size} bytes`);
-        } else if (sdkRes.error) {
-          lastError = sdkRes.error;
-          console.warn("[NativePdfService] Tier 1 SDK download error:", sdkRes.error);
-        }
-      } catch (sdkEx: any) {
-        lastError = sdkEx;
-        console.warn("[NativePdfService] Tier 1 SDK download exception:", sdkEx);
+      const streamRes = await streamFetchFromSupabaseStorage(
+        activeBucket,
+        activePath,
+        updateProgress,
+        20000
+      );
+      if (streamRes.blob && streamRes.blob.size > 0) {
+        pdfBlob = streamRes.blob;
       }
     }
 
-    // 2b. Secondary: Fresh Signed URL download if direct SDK download did not return blob
-    if (!pdfBlob && activePath && !url.startsWith("data:") && !url.startsWith("blob:")) {
-      try {
-        console.log(`[NativePdfService] Tier 2: Attempting signed URL retrieval for "${activePath}"`);
-        const { data: signedData, error: signedError } = await supabase.storage
-          .from(activeBucket)
-          .createSignedUrl(activePath, 3600);
-
-        if (!signedError && signedData?.signedUrl) {
-          generatedUrl = signedData.signedUrl;
-          console.log(`[NativePdfService] Tier 2 signed URL generated: ${generatedUrl}`);
-          const res = await fetchBlobWithByteProgress(generatedUrl, updateProgress, 15000);
-          httpStatus = res.status;
-          if (res.blob && res.blob.size > 0) {
-            pdfBlob = res.blob;
-            lastError = null;
-            console.log(`[NativePdfService] Tier 2 signed URL fetch succeeded: ${pdfBlob.size} bytes`);
-          }
-        } else if (signedError) {
-          lastError = signedError;
-          console.warn("[NativePdfService] Tier 2 createSignedUrl error:", signedError);
-        }
-      } catch (signedEx: any) {
-        lastError = signedEx;
-        console.warn("[NativePdfService] Tier 2 signed URL fetch exception:", signedEx);
-      }
+    // Fallback for inline Base64 data URLs
+    if (!pdfBlob && url && (url.startsWith("data:") || url.startsWith("JVBERi"))) {
+      pdfBlob = await dataUrlToBlob(url);
     }
 
-    // 2c. Tertiary: Public URL download
-    if (!pdfBlob && activePath && !url.startsWith("data:") && !url.startsWith("blob:")) {
-      try {
-        console.log(`[NativePdfService] Tier 3: Attempting public URL fetch for "${activePath}"`);
-        const { data: publicData } = supabase.storage.from(activeBucket).getPublicUrl(activePath);
-        if (publicData?.publicUrl) {
-          generatedUrl = publicData.publicUrl;
-          const res = await fetchBlobWithByteProgress(generatedUrl, updateProgress, 15000);
-          httpStatus = res.status;
-          if (res.blob && res.blob.size > 0) {
-            pdfBlob = res.blob;
-            lastError = null;
-            console.log(`[NativePdfService] Tier 3 public URL fetch succeeded: ${pdfBlob.size} bytes`);
-          }
-        }
-      } catch (pubEx: any) {
-        console.warn("[NativePdfService] Tier 3 public URL fetch exception:", pubEx);
-      }
-    }
-
-    // 2d. Fallback for external HTTPS URL or data URL
-    if (!pdfBlob) {
-      if (url && (url.startsWith("data:") || url.startsWith("JVBERi"))) {
-        pdfBlob = await dataUrlToBlob(url);
-        httpStatus = 200;
-        updateProgress(100, "Opening…");
-      } else if (url && (url.startsWith("http://") || url.startsWith("https://")) && !url.includes("mock-supabase.local")) {
-        try {
-          generatedUrl = url;
-          const res = await fetchBlobWithByteProgress(url, updateProgress, 15000);
-          httpStatus = res.status;
-          if (res.blob && res.blob.size > 0) {
-            pdfBlob = res.blob;
-            lastError = null;
-          }
-        } catch (extEx) {
-          console.warn("[NativePdfService] External URL fetch exception:", extEx);
-        }
-      }
-    }
-
-    // Validation: Storage object must exist and not be empty
+    // Validation: Downloaded blob must exist and not be empty
     if (!pdfBlob || pdfBlob.size <= 0) {
-      console.error("[NativePdfService] STORAGE_DOWNLOAD_FAILED", {
-        topicId: noteId,
-        noteId: noteId,
+      console.error("[NativePdfService] Supabase Storage download failed:", {
+        noteId,
         bucket: activeBucket,
         storagePath: activePath,
-        generatedUrl,
-        httpStatus,
-        downloadSize: 0,
-        cacheHit: false,
-        exception: lastError || "Storage object not found or empty"
+        cacheHit: false
       });
-      throw new Error("Unable to open note. Please try again.");
+
+      if (!isRetry) {
+        console.log("[NativePdfService] Retrying Supabase Storage download once…");
+        return executeOperation(true);
+      }
+      throw new Error(USER_FRIENDLY_NOTE_ERROR);
     }
 
-    // Validate document magic bytes
+    // Validate PDF magic bytes
     if (!isImg) {
       const isValidHeader = await validatePdfHeader(pdfBlob);
       if (!isValidHeader) {
-        console.error("[NativePdfService] INVALID_PDF_HEADER", {
-          topicId: noteId,
-          noteId: noteId,
+        console.error("[NativePdfService] Corrupted PDF file header:", {
+          noteId,
           bucket: activeBucket,
           storagePath: activePath,
-          downloadSize: pdfBlob.size,
-          mimeType: pdfBlob.type
+          size: pdfBlob.size
         });
-        throw new Error("Unable to open note. Please try again.");
+        if (!isRetry) {
+          return executeOperation(true);
+        }
+        throw new Error(USER_FRIENDLY_NOTE_ERROR);
       }
     }
 
-    console.log("[NativePdfService] DOWNLOAD_SUCCESS", {
-      topicId: noteId,
-      noteId: noteId,
-      bucket: activeBucket,
-      storagePath: activePath,
-      generatedUrl,
-      httpStatus: httpStatus || 200,
-      downloadSize: pdfBlob.size,
-      cacheHit: false
-    });
-
-    // Step 3: Save to local cache
-    updateProgress(85, "Opening…");
+    // Step 3: Save to local cache and verify integrity
+    updateProgress(100, "Opening…");
 
     if (isNative) {
-      const base64Data = await blobToBase64(pdfBlob);
+      try {
+        const base64Data = await blobToBase64(pdfBlob);
 
-      await withTimeout(
-        Filesystem.writeFile({
+        await withTimeout(
+          Filesystem.writeFile({
+            path: cacheFileName,
+            data: base64Data,
+            directory: Directory.Cache,
+            recursive: true,
+          }),
+          10000,
+          "Failed to write note to cache"
+        );
+
+        // Verify written file exists and size > 0
+        const statCheck = await Filesystem.stat({
           path: cacheFileName,
-          data: base64Data,
           directory: Directory.Cache,
-          recursive: true,
-        }),
-        10000,
-        "Failed to write note to cache"
-      );
+        });
 
-      const uriResult = await Filesystem.getUri({
-        path: cacheFileName,
-        directory: Directory.Cache,
-      });
+        if (!statCheck || (statCheck as any).size <= 0) {
+          await Filesystem.deleteFile({ path: cacheFileName, directory: Directory.Cache }).catch(() => {});
+          throw new Error("Local cache verification failed.");
+        }
 
-      // Step 4: Open native viewer exactly once
-      updateProgress(95, "Opening…");
-      await launchNativeViewerOnce(uriResult.uri, contentType, isImg);
+        const uriResult = await Filesystem.getUri({
+          path: cacheFileName,
+          directory: Directory.Cache,
+        });
 
-      updateProgress(100, "Opening…");
-      return { success: true, cachedPath: uriResult.uri, isNative: true };
+        // Step 4: Open native PDF / Image viewer
+        await launchNativeViewerOnce(uriResult.uri, contentType, isImg);
+
+        return { success: true, cachedPath: uriResult.uri, isNative: true };
+      } catch (saveErr) {
+        console.error("[NativePdfService] Error saving or opening cached file:", saveErr);
+        await Filesystem.deleteFile({ path: cacheFileName, directory: Directory.Cache }).catch(() => {});
+        if (!isRetry) {
+          return executeOperation(true);
+        }
+        throw new Error(USER_FRIENDLY_NOTE_ERROR);
+      }
     } else {
       // Web / in-app preview: keep in web memory cache
       const objectUrl = URL.createObjectURL(pdfBlob);
       webBlobCache.set(cacheFileName, { blob: pdfBlob, objectUrl });
-
-      updateProgress(100, "Opening…");
       return { success: true, isNative: false, objectUrl, blob: pdfBlob, cachedPath: objectUrl };
     }
   };

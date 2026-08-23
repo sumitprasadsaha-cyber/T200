@@ -91,17 +91,19 @@ function getRuntimeEnvValue(key: string, fallback = ""): string {
 const DEFAULT_SUPABASE_URL = "https://kffaehofciebfqczhfxm.supabase.co";
 const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_t9Xgetmt4736XUtCrAq8pQ_zcTJWzUg";
 
+export function getSupabaseConfig(): { url: string; anonKey: string } {
+  const rawSupabaseUrl = getRuntimeEnvValue("VITE_SUPABASE_URL") || DEFAULT_SUPABASE_URL;
+  const supabaseAnonKey = getRuntimeEnvValue("VITE_SUPABASE_ANON_KEY") || DEFAULT_SUPABASE_ANON_KEY;
+  const cleanSupabaseUrl = rawSupabaseUrl
+    .trim()
+    .replace(/\/rest\/v1\/?$/i, "")
+    .replace(/\/+$/, "");
+  return { url: cleanSupabaseUrl, anonKey: supabaseAnonKey };
+}
+
 function getClient() {
   if (!supabaseInstance) {
-    const rawSupabaseUrl = getRuntimeEnvValue("VITE_SUPABASE_URL") || DEFAULT_SUPABASE_URL;
-    const supabaseAnonKey = getRuntimeEnvValue("VITE_SUPABASE_ANON_KEY") || DEFAULT_SUPABASE_ANON_KEY;
-    
-    // Normalize Supabase URL by stripping trailing '/rest/v1' or '/rest/v1/' or trailing slashes
-    const cleanSupabaseUrl = rawSupabaseUrl
-      .trim()
-      .replace(/\/rest\/v1\/?$/i, "")
-      .replace(/\/+$/, "");
-
+    const { url: cleanSupabaseUrl, anonKey: supabaseAnonKey } = getSupabaseConfig();
     console.log(`[SupabaseClient] Initialized client with clean base URL: "${cleanSupabaseUrl}"`);
     supabaseInstance = createClient(cleanSupabaseUrl, supabaseAnonKey);
   }

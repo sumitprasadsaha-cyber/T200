@@ -2405,6 +2405,8 @@ export function StudentMyTab({
           fileName={activePreviewPdf.fileName}
           mimeType={activePreviewPdf.mimeType}
           fileType={activePreviewPdf.fileType}
+          studentId={localStudent?.id}
+          subject={selectedSubject || undefined}
         />
       )}
 
