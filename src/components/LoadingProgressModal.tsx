@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { CheckCircle2, Sparkles, Loader2 } from "lucide-react";
+import { CheckCircle2, Loader2 } from "lucide-react";
 import { progressService, ProgressState } from "../lib/progressService";
 
 export function LoadingProgressModal() {
@@ -14,8 +14,11 @@ export function LoadingProgressModal() {
 
   if (!state.isOpen) return null;
 
-  const displayPercent = Math.min(100, Math.max(0, Math.round(state.progress)));
-  const isCompleted = state.status === "completed" || displayPercent >= 100;
+  const isIndeterminate = state.isIndeterminate || state.progress === null;
+  const displayPercent = !isIndeterminate && typeof state.progress === "number"
+    ? Math.min(100, Math.max(0, Math.round(state.progress)))
+    : null;
+  const isCompleted = state.status === "completed" || (displayPercent !== null && displayPercent >= 100);
 
   return (
     <div
@@ -38,7 +41,7 @@ export function LoadingProgressModal() {
             </div>
           ) : (
             <div className="w-14 h-14 rounded-2xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/80 flex items-center justify-center text-blue-600 dark:text-blue-400 shadow-sm">
-              <Sparkles className="w-7 h-7 stroke-[2.2] animate-pulse" />
+              <Loader2 className="w-7 h-7 stroke-[2.2] animate-spin" />
             </div>
           )}
         </div>
@@ -52,52 +55,58 @@ export function LoadingProgressModal() {
             {state.label}
           </h3>
           <p className="text-xs font-semibold text-slate-400 dark:text-slate-500">
-            {isCompleted ? "Done! Opening now…" : "Please wait a moment…"}
+            {isCompleted ? "Completed" : "Please wait a moment…"}
           </p>
         </div>
 
-        {/* Modern Progress Bar with Percentage Counter */}
-        <div className="w-full space-y-2 mt-1">
-          <div className="flex items-center justify-between text-xs font-bold text-slate-600 dark:text-slate-300 px-1">
-            <span className="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-extrabold">
-              {isCompleted ? "Completed" : "Progress"}
-            </span>
-            <span className="font-mono font-black text-blue-600 dark:text-blue-400 text-sm">
-              {displayPercent}%
-            </span>
-          </div>
+        {/* Progress Bar with Percentage Counter if determinate, otherwise indeterminate spinner indicator */}
+        {!isIndeterminate && displayPercent !== null ? (
+          <div className="w-full space-y-2 mt-1">
+            <div className="flex items-center justify-between text-xs font-bold text-slate-600 dark:text-slate-300 px-1">
+              <span className="text-[11px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-extrabold">
+                {isCompleted ? "Completed" : "Progress"}
+              </span>
+              <span className="font-mono font-black text-blue-600 dark:text-blue-400 text-sm">
+                {displayPercent}%
+              </span>
+            </div>
 
-          <div
-            className="relative w-full bg-slate-100 dark:bg-slate-800/80 h-3 rounded-full overflow-hidden p-0.5 border border-slate-200/50 dark:border-slate-700/50"
-            role="progressbar"
-            aria-valuenow={displayPercent}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
             <div
-              className={`h-full rounded-full transition-all duration-200 ease-out ${
-                isCompleted
-                  ? "bg-gradient-to-r from-emerald-500 to-teal-500"
-                  : "bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 shadow-xs shadow-blue-500/50"
-              }`}
-              style={{ width: `${Math.max(4, displayPercent)}%` }}
-            />
+              className="relative w-full bg-slate-100 dark:bg-slate-800/80 h-3 rounded-full overflow-hidden p-0.5 border border-slate-200/50 dark:border-slate-700/50"
+              role="progressbar"
+              aria-valuenow={displayPercent}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div
+                className={`h-full rounded-full transition-all duration-200 ease-out ${
+                  isCompleted
+                    ? "bg-gradient-to-r from-emerald-500 to-teal-500"
+                    : "bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 shadow-xs shadow-blue-500/50"
+                }`}
+                style={{ width: `${Math.max(4, displayPercent)}%` }}
+              />
+            </div>
           </div>
-        </div>
+        ) : null}
       </div>
     </div>
   );
 }
 
 export interface InlineProgressBarProps {
-  progress: number;
+  progress?: number | null;
   label?: string;
   className?: string;
+  isIndeterminate?: boolean;
 }
 
-export function InlineProgressBar({ progress, label, className = "" }: InlineProgressBarProps) {
-  const displayPercent = Math.min(100, Math.max(0, Math.round(progress)));
-  const isCompleted = displayPercent >= 100;
+export function InlineProgressBar({ progress, label, className = "", isIndeterminate = false }: InlineProgressBarProps) {
+  const showIndeterminate = isIndeterminate || progress === undefined || progress === null;
+  const displayPercent = !showIndeterminate && typeof progress === "number"
+    ? Math.min(100, Math.max(0, Math.round(progress)))
+    : null;
+  const isCompleted = displayPercent !== null && displayPercent >= 100;
 
   return (
     <div className={`w-full space-y-2 p-4 rounded-2xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/40 ${className}`}>
@@ -110,27 +119,31 @@ export function InlineProgressBar({ progress, label, className = "" }: InlinePro
           )}
           <span className="truncate font-semibold">{label || (isCompleted ? "Completed" : "Processing…")}</span>
         </div>
-        <span className="font-mono font-black text-blue-600 dark:text-blue-400 shrink-0">
-          {displayPercent}%
-        </span>
+        {displayPercent !== null && (
+          <span className="font-mono font-black text-blue-600 dark:text-blue-400 shrink-0">
+            {displayPercent}%
+          </span>
+        )}
       </div>
 
-      <div
-        className="relative w-full bg-slate-200/80 dark:bg-slate-800/80 h-2.5 rounded-full overflow-hidden"
-        role="progressbar"
-        aria-valuenow={displayPercent}
-        aria-valuemin={0}
-        aria-valuemax={100}
-      >
+      {!showIndeterminate && displayPercent !== null && (
         <div
-          className={`h-full rounded-full transition-all duration-200 ease-out ${
-            isCompleted
-              ? "bg-gradient-to-r from-emerald-500 to-teal-500"
-              : "bg-gradient-to-r from-blue-600 to-indigo-600"
-          }`}
-          style={{ width: `${Math.max(3, displayPercent)}%` }}
-        />
-      </div>
+          className="relative w-full bg-slate-200/80 dark:bg-slate-800/80 h-2.5 rounded-full overflow-hidden"
+          role="progressbar"
+          aria-valuenow={displayPercent}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <div
+            className={`h-full rounded-full transition-all duration-200 ease-out ${
+              isCompleted
+                ? "bg-gradient-to-r from-emerald-500 to-teal-500"
+                : "bg-gradient-to-r from-blue-600 to-indigo-600"
+            }`}
+            style={{ width: `${Math.max(3, displayPercent)}%` }}
+          />
+        </div>
+      )}
     </div>
   );
 }

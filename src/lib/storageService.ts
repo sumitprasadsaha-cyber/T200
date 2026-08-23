@@ -243,6 +243,54 @@ export function buildQuestionImageStoragePath(topicOrTestId: string, originalFil
 }
 
 /**
+ * Uploads a file or blob to Supabase Storage with real upload progress tracking via XMLHttpRequest.
+ */
+async function uploadWithXhrProgress(
+  url: string,
+  anonKey: string,
+  file: File | Blob,
+  mimeType: string,
+  onProgress?: (percent: number) => void
+): Promise<boolean> {
+  if (typeof XMLHttpRequest === "undefined") return false;
+  return new Promise((resolve) => {
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", url, true);
+      xhr.setRequestHeader("apikey", anonKey);
+      xhr.setRequestHeader("Authorization", `Bearer ${anonKey}`);
+      xhr.setRequestHeader("Content-Type", mimeType);
+      xhr.setRequestHeader("x-upsert", "true");
+
+      if (xhr.upload && onProgress) {
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && event.total > 0) {
+            const percent = Math.min(100, Math.max(0, Math.round((event.loaded / event.total) * 100)));
+            onProgress(percent);
+          }
+        };
+      }
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          if (onProgress) onProgress(100);
+          resolve(true);
+        } else {
+          console.warn(`[StorageService] XHR upload status: ${xhr.status}`);
+          resolve(false);
+        }
+      };
+
+      xhr.onerror = () => resolve(false);
+      xhr.ontimeout = () => resolve(false);
+      xhr.send(file);
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+/**
  * Uploads a file or blob to Supabase Storage.
  * Logs final bucket name, upload path, and storage responses.
  * Throws exact error message if upload fails.
@@ -274,31 +322,41 @@ export async function uploadFileToSupabase(
     throw new Error(`Supabase Storage Error: ${pathError}`);
   }
 
-  if (onProgress) onProgress(10);
+  const rawSupabaseUrl = getRuntimeEnvValue("VITE_SUPABASE_URL") || "https://kffaehofciebfqczhfxm.supabase.co";
+  const supabaseAnonKey = getRuntimeEnvValue("VITE_SUPABASE_ANON_KEY") || "sb_publishable_t9Xgetmt4736XUtCrAq8pQ_zcTJWzUg";
+  const cleanSupabaseUrl = rawSupabaseUrl.trim().replace(/\/rest\/v1\/?$/i, "").replace(/\/+$/, "");
 
-  const { data, error } = await supabase.storage
-    .from(bucket)
-    .upload(sanitizedPath, file, {
-      contentType: mimeType,
-      upsert: true
-    });
+  let uploadSucceeded = false;
+  if (onProgress && cleanSupabaseUrl && !cleanSupabaseUrl.includes("mock-supabase.local")) {
+    const directUploadUrl = `${cleanSupabaseUrl}/storage/v1/object/${bucket}/${sanitizedPath}`;
+    uploadSucceeded = await uploadWithXhrProgress(directUploadUrl, supabaseAnonKey, file, mimeType, onProgress);
+  }
 
-  console.log("[StorageService] Supabase upload response object:", { data, error });
+  if (!uploadSucceeded) {
+    const { data, error } = await supabase.storage
+      .from(bucket)
+      .upload(sanitizedPath, file, {
+        contentType: mimeType,
+        upsert: true
+      });
 
-  if (error) {
-    const rawErrorMsg = error.message || JSON.stringify(error);
-    console.error("[StorageService] SUPABASE UPLOAD FAILURE DETAILS:", {
-      bucket,
-      storagePath: sanitizedPath,
-      fileName,
-      error
-    });
-    throw new Error(`Supabase Storage Error: ${rawErrorMsg}`);
+    console.log("[StorageService] Supabase upload response object:", { data, error });
+
+    if (error) {
+      const rawErrorMsg = error.message || JSON.stringify(error);
+      console.error("[StorageService] SUPABASE UPLOAD FAILURE DETAILS:", {
+        bucket,
+        storagePath: sanitizedPath,
+        fileName,
+        error
+      });
+      throw new Error(`Supabase Storage Error: ${rawErrorMsg}`);
+    }
   }
 
   if (onProgress) onProgress(100);
 
-  const successPath = data?.path ? sanitizeStoragePath(data.path, bucket) : sanitizedPath;
+  const successPath = sanitizedPath;
 
   let downloadUrl = "";
   try {

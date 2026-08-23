@@ -432,23 +432,22 @@ export default function App() {
   };
 
   const handleManualRefresh = async () => {
-    await progressService.runWithProgress({ label: "Refreshing Data…" }, async () => {
-      setIsRefreshing(true);
-      try {
-        const refreshedStudents = getLocalStudents();
-        if (refreshedStudents.length > 0) {
-          setStudents(refreshedStudents);
-        }
-        const refreshedNotes = getLocalClassNotes();
-        if (refreshedNotes.length > 0) {
-          setClassNotes(refreshedNotes);
-        }
-      } catch (err) {
-        console.error("Manual refresh error:", err);
-      } finally {
-        setIsRefreshing(false);
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      const refreshedStudents = getLocalStudents();
+      if (refreshedStudents.length > 0) {
+        setStudents(refreshedStudents);
       }
-    });
+      const refreshedNotes = getLocalClassNotes();
+      if (refreshedNotes.length > 0) {
+        setClassNotes(refreshedNotes);
+      }
+    } catch (err) {
+      console.warn("Manual refresh notice:", err);
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   // --- Navigation States ---

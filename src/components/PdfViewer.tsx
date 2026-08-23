@@ -66,7 +66,7 @@ export default function PdfViewer({
       if (!isMountedRef.current) return;
       setStatus("downloading");
       setError(null);
-      setProgress(20);
+      setProgress(0);
       setStatusText("Preparing Note…");
 
       await openPdfWithNativeViewer({
@@ -99,12 +99,8 @@ export default function PdfViewer({
         recordNoteOpenedOrDownloaded(studentId, subject || "", noteId);
       }
 
-      // Auto dismiss modal overlay smoothly after viewer is launched
-      closeTimerRef.current = setTimeout(() => {
-        if (isMountedRef.current) {
-          onCloseRef.current();
-        }
-      }, 1000);
+      // Immediately dismiss modal overlay upon completion
+      onCloseRef.current();
     } catch (err: any) {
       console.error("[PdfViewer Modal] Error opening document:", err);
       if (!isMountedRef.current) return;

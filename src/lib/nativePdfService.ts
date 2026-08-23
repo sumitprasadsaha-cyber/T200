@@ -178,6 +178,89 @@ export function downloadBlobDirectly(blob: Blob, fileName: string): void {
 }
 
 /**
+ * Fetches a URL with real byte progress tracking via XMLHttpRequest or fetch ReadableStream.
+ */
+async function fetchBlobWithByteProgress(
+  url: string,
+  onProgress?: (percent: number, label: string) => void,
+  timeoutMs = 15000
+): Promise<{ blob: Blob | null; status: number }> {
+  if (typeof XMLHttpRequest !== "undefined") {
+    return new Promise((resolve) => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", url, true);
+        xhr.responseType = "blob";
+        xhr.timeout = timeoutMs;
+
+        xhr.onprogress = (event) => {
+          if (event.lengthComputable && event.total > 0 && onProgress) {
+            const percent = Math.min(99, Math.max(0, Math.round((event.loaded / event.total) * 100)));
+            onProgress(percent, "Downloading…");
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300 && xhr.response instanceof Blob && xhr.response.size > 0) {
+            resolve({ blob: xhr.response, status: xhr.status });
+          } else {
+            resolve({ blob: null, status: xhr.status });
+          }
+        };
+
+        xhr.onerror = () => resolve({ blob: null, status: 0 });
+        xhr.ontimeout = () => resolve({ blob: null, status: 408 });
+        xhr.send();
+      } catch {
+        resolve({ blob: null, status: 0 });
+      }
+    });
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!response.ok) return { blob: null, status: response.status };
+
+    const contentLength = response.headers.get("content-length");
+    const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+
+    if (response.body && totalBytes > 0) {
+      const reader = response.body.getReader();
+      let receivedBytes = 0;
+      const chunks: Uint8Array[] = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          receivedBytes += value.length;
+          const percent = Math.min(99, Math.round((receivedBytes / totalBytes) * 100));
+          if (onProgress) onProgress(percent, "Downloading…");
+        }
+      }
+      const all = new Uint8Array(receivedBytes);
+      let offset = 0;
+      for (const c of chunks) {
+        all.set(c, offset);
+        offset += c.length;
+      }
+      return {
+        blob: new Blob([all], { type: response.headers.get("content-type") || "application/pdf" }),
+        status: response.status
+      };
+    }
+
+    const fetchedBlob = await response.blob();
+    return { blob: fetchedBlob, status: response.status };
+  } catch {
+    return { blob: null, status: 0 };
+  }
+}
+
+/**
  * Launch native file viewer intent exactly once with debounce protection.
  */
 async function launchNativeViewerOnce(uri: string, contentType: string, _isImg: boolean): Promise<void> {
@@ -280,7 +363,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
     const isNative = isNativePlatform();
 
     // Step 1: Look for cached file
-    updateProgress(20, "Preparing Note…");
+    updateProgress(0, "Preparing Note…");
 
     const cacheCheck = await checkLocalCache(cacheFileName);
     if (cacheCheck.exists && cacheCheck.uri) {
@@ -293,12 +376,11 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
         size: cacheCheck.size
       });
 
-      updateProgress(90, "Opening…");
+      updateProgress(100, "Opening…");
 
       if (isNative) {
         try {
           await launchNativeViewerOnce(cacheCheck.uri, contentType, isImg);
-          updateProgress(100, "Opening…");
           return { success: true, cachedPath: cacheCheck.uri, isNative: true };
         } catch (openerErr: any) {
           console.warn("[NativePdfService] Opener failed on cached file, removing corrupted cache:", openerErr);
@@ -315,7 +397,6 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
         if (cached?.blob) {
           downloadBlobDirectly(cached.blob, fileName || `${cacheFileName}.${ext}`);
         }
-        updateProgress(100, "Opening…");
         return { success: true, isNative: false };
       }
     }
@@ -329,7 +410,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
     });
 
     // Step 2: Fetch from Supabase Storage
-    updateProgress(50, "Downloading…");
+    updateProgress(0, "Downloading…");
 
     let pdfBlob: Blob | null = null;
     let generatedUrl = "";
@@ -349,6 +430,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
         if (!sdkRes.error && sdkRes.data && sdkRes.data.size > 0) {
           pdfBlob = sdkRes.data;
           httpStatus = 200;
+          updateProgress(100, "Opening…");
           console.log(`[NativePdfService] Tier 1 SDK download succeeded: ${pdfBlob.size} bytes`);
         } else if (sdkRes.error) {
           lastError = sdkRes.error;
@@ -371,23 +453,12 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
         if (!signedError && signedData?.signedUrl) {
           generatedUrl = signedData.signedUrl;
           console.log(`[NativePdfService] Tier 2 signed URL generated: ${generatedUrl}`);
-          const controller = new AbortController();
-          const fetchTimeout = setTimeout(() => controller.abort(), 15000);
-          try {
-            const response = await fetch(generatedUrl, { signal: controller.signal });
-            httpStatus = response.status;
-            if (response.ok) {
-              const fetchedBlob = await response.blob();
-              if (fetchedBlob && fetchedBlob.size > 0) {
-                pdfBlob = fetchedBlob;
-                lastError = null;
-                console.log(`[NativePdfService] Tier 2 signed URL fetch succeeded: ${pdfBlob.size} bytes`);
-              }
-            } else {
-              console.warn(`[NativePdfService] Tier 2 signed URL returned HTTP status ${response.status}`);
-            }
-          } finally {
-            clearTimeout(fetchTimeout);
+          const res = await fetchBlobWithByteProgress(generatedUrl, updateProgress, 15000);
+          httpStatus = res.status;
+          if (res.blob && res.blob.size > 0) {
+            pdfBlob = res.blob;
+            lastError = null;
+            console.log(`[NativePdfService] Tier 2 signed URL fetch succeeded: ${pdfBlob.size} bytes`);
           }
         } else if (signedError) {
           lastError = signedError;
@@ -406,21 +477,12 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
         const { data: publicData } = supabase.storage.from(activeBucket).getPublicUrl(activePath);
         if (publicData?.publicUrl) {
           generatedUrl = publicData.publicUrl;
-          const controller = new AbortController();
-          const fetchTimeout = setTimeout(() => controller.abort(), 12000);
-          try {
-            const response = await fetch(generatedUrl, { signal: controller.signal });
-            httpStatus = response.status;
-            if (response.ok) {
-              const pubBlob = await response.blob();
-              if (pubBlob && pubBlob.size > 0) {
-                pdfBlob = pubBlob;
-                lastError = null;
-                console.log(`[NativePdfService] Tier 3 public URL fetch succeeded: ${pdfBlob.size} bytes`);
-              }
-            }
-          } finally {
-            clearTimeout(fetchTimeout);
+          const res = await fetchBlobWithByteProgress(generatedUrl, updateProgress, 15000);
+          httpStatus = res.status;
+          if (res.blob && res.blob.size > 0) {
+            pdfBlob = res.blob;
+            lastError = null;
+            console.log(`[NativePdfService] Tier 3 public URL fetch succeeded: ${pdfBlob.size} bytes`);
           }
         }
       } catch (pubEx: any) {
@@ -433,17 +495,15 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
       if (url && (url.startsWith("data:") || url.startsWith("JVBERi"))) {
         pdfBlob = await dataUrlToBlob(url);
         httpStatus = 200;
+        updateProgress(100, "Opening…");
       } else if (url && (url.startsWith("http://") || url.startsWith("https://")) && !url.includes("mock-supabase.local")) {
         try {
           generatedUrl = url;
-          const response = await fetch(url);
-          httpStatus = response.status;
-          if (response.ok) {
-            const externalBlob = await response.blob();
-            if (externalBlob && externalBlob.size > 0) {
-              pdfBlob = externalBlob;
-              lastError = null;
-            }
+          const res = await fetchBlobWithByteProgress(url, updateProgress, 15000);
+          httpStatus = res.status;
+          if (res.blob && res.blob.size > 0) {
+            pdfBlob = res.blob;
+            lastError = null;
           }
         } catch (extEx) {
           console.warn("[NativePdfService] External URL fetch exception:", extEx);

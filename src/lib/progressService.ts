@@ -7,9 +7,9 @@
 export interface ProgressState {
   isOpen: boolean;
   label: string;
-  progress: number; // 0 to 100
+  progress: number | null; // 0 to 100 or null if indeterminate
   status: "loading" | "completed" | "error";
-  isRealProgress: boolean;
+  isIndeterminate: boolean;
 }
 
 type ProgressListener = (state: ProgressState) => void;
@@ -18,15 +18,12 @@ class ProgressManager {
   private state: ProgressState = {
     isOpen: false,
     label: "Loading…",
-    progress: 0,
+    progress: null,
     status: "loading",
-    isRealProgress: false,
+    isIndeterminate: true,
   };
 
   private listeners = new Set<ProgressListener>();
-  private simInterval: any = null;
-  private autoDismissTimer: any = null;
-  private isCompleting = false;
 
   private notify() {
     const cloned = { ...this.state };
@@ -153,84 +150,40 @@ class ProgressManager {
   }
 
   /**
-   * Starts displaying the progress bar.
-   * If not using real progress, sets up smooth simulated progress advancement.
+   * Starts displaying the progress indicator.
+   * If real progress value is provided, it is set; otherwise it runs in indeterminate mode.
    */
   public start(options: {
     label: string;
     initialProgress?: number;
     isRealProgress?: boolean;
   }) {
-    if (this.autoDismissTimer) {
-      clearTimeout(this.autoDismissTimer);
-      this.autoDismissTimer = null;
-    }
-    if (this.simInterval) {
-      clearInterval(this.simInterval);
-      this.simInterval = null;
-    }
-
-    this.isCompleting = false;
-    const isReal = Boolean(options.isRealProgress);
-    const startProgress = options.initialProgress !== undefined ? options.initialProgress : 12;
+    const hasInitial = typeof options.initialProgress === "number";
+    const isIndeterminate = !hasInitial && !options.isRealProgress;
 
     this.state = {
       isOpen: true,
       label: this.sanitizeLabel(options.label),
-      progress: Math.min(100, Math.max(0, startProgress)),
+      progress: hasInitial ? Math.min(100, Math.max(0, options.initialProgress!)) : null,
       status: "loading",
-      isRealProgress: isReal,
+      isIndeterminate,
     };
     this.notify();
-
-    if (!isReal) {
-      this.startSimulation();
-    }
-  }
-
-  private startSimulation() {
-    if (this.simInterval) {
-      clearInterval(this.simInterval);
-    }
-
-    // Smooth natural advancement that asymptotically pauses around 92-94%
-    this.simInterval = setInterval(() => {
-      if (this.isCompleting || !this.state.isOpen || this.state.isRealProgress) {
-        clearInterval(this.simInterval);
-        this.simInterval = null;
-        return;
-      }
-
-      const current = this.state.progress;
-      if (current < 92) {
-        // Smooth logarithmic step
-        const remaining = 93 - current;
-        const step = Math.max(0.4, remaining * 0.07);
-        const next = Math.min(93, current + step);
-        this.state.progress = Math.round(next * 10) / 10;
-        this.notify();
-      }
-    }, 75);
   }
 
   /**
    * Updates real progress percentage (0-100) and optional label.
    */
   public update(progress: number, label?: string) {
-    if (this.simInterval) {
-      clearInterval(this.simInterval);
-      this.simInterval = null;
-    }
-
     const clamped = Math.min(100, Math.max(0, progress));
-    this.state.isRealProgress = true;
+    this.state.isIndeterminate = false;
     this.state.progress = Math.round(clamped * 10) / 10;
     if (label) {
       this.state.label = this.sanitizeLabel(label);
     }
     this.notify();
 
-    if (clamped >= 100 && !this.isCompleting) {
+    if (clamped >= 100) {
       this.finish();
     }
   }
@@ -244,70 +197,35 @@ class ProgressManager {
   }
 
   /**
-   * Successfully finishes progress: animates smoothly to 100%,
-   * marks completion, and auto-dismisses after a brief pause.
+   * Successfully finishes progress and immediately closes the UI without leaving dialogs visible.
    */
-  public finish(customLabel?: string): Promise<void> {
-    return new Promise((resolve) => {
-      if (this.simInterval) {
-        clearInterval(this.simInterval);
-        this.simInterval = null;
-      }
-
-      this.isCompleting = true;
-      this.state.progress = 100;
-      this.state.status = "completed";
-      if (customLabel) {
-        this.state.label = this.sanitizeLabel(customLabel);
-      }
-      this.notify();
-
-      if (this.autoDismissTimer) {
-        clearTimeout(this.autoDismissTimer);
-      }
-
-      this.autoDismissTimer = setTimeout(() => {
-        this.state.isOpen = false;
-        this.notify();
-        this.isCompleting = false;
-        resolve();
-      }, 350);
-    });
-  }
-
-  /**
-   * Immediately dismisses the progress bar without completion animation (used on cancel or unmount).
-   */
-  public dismiss() {
-    if (this.simInterval) {
-      clearInterval(this.simInterval);
-      this.simInterval = null;
-    }
-    if (this.autoDismissTimer) {
-      clearTimeout(this.autoDismissTimer);
-      this.autoDismissTimer = null;
-    }
-    this.isCompleting = false;
+  public async finish(_customLabel?: string): Promise<void> {
     this.state.isOpen = false;
-    this.state.status = "loading";
+    this.state.status = "completed";
+    this.state.progress = 100;
+    this.state.isIndeterminate = false;
     this.notify();
   }
 
   /**
-   * Dismisses the progress bar gracefully on error.
+   * Immediately dismisses the progress UI.
+   */
+  public dismiss() {
+    this.state.isOpen = false;
+    this.state.status = "loading";
+    this.state.progress = null;
+    this.state.isIndeterminate = true;
+    this.notify();
+  }
+
+  /**
+   * Dismisses the progress UI on error.
    */
   public fail() {
-    if (this.simInterval) {
-      clearInterval(this.simInterval);
-      this.simInterval = null;
-    }
-    if (this.autoDismissTimer) {
-      clearTimeout(this.autoDismissTimer);
-      this.autoDismissTimer = null;
-    }
-    this.isCompleting = false;
     this.state.isOpen = false;
     this.state.status = "error";
+    this.state.progress = null;
+    this.state.isIndeterminate = true;
     this.notify();
   }
 

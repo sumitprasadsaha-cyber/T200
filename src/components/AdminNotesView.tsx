@@ -424,10 +424,8 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         pdfFile,
         renamedFileName,
         "Admin",
-        (percent) => setUploadProgress(15 + Math.round(percent * 0.75))
+        (percent) => setUploadProgress(percent)
       );
-
-      setUploadProgress(95);
 
       const mime = pdfFile.type || (isImg ? "image/jpeg" : "application/pdf");
       const fType: "pdf" | "image" = isImg ? "image" : "pdf";
@@ -605,7 +603,8 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         uploadPath,
         replaceFile,
         renamedFileName,
-        "Admin"
+        "Admin",
+        (percent) => setUploadProgress(percent)
       );
 
       const mime = replaceFile.type || (isImg ? "image/jpeg" : "application/pdf");
