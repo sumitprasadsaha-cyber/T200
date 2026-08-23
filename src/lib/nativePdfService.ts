@@ -9,6 +9,8 @@ export type NoteViewerState = "idle" | "downloading" | "opening" | "opened" | "e
 
 export const USER_FRIENDLY_NOTE_ERROR =
   "Unable to download note. Please check your internet connection and try again.";
+export const USER_FRIENDLY_NOTE_UNAVAILABLE =
+  "This note is unavailable. Please contact the administrator.";
 
 export interface OpenPdfOptions {
   url: string;
@@ -19,7 +21,7 @@ export interface OpenPdfOptions {
   fileName?: string;
   mimeType?: string;
   fileType?: "pdf" | "image" | string;
-  onProgress?: (percent: number, statusText: string) => void;
+  onProgress?: (percent: number | null, statusText: string) => void;
 }
 
 export interface OpenPdfResult {
@@ -177,14 +179,16 @@ function encodeStoragePath(rawPath: string): string {
 }
 
 /**
- * Fetches file directly from Supabase Storage with exact byte streaming progress.
+ * Fetches file directly from Supabase Storage with strict 10s first-byte timeout,
+ * real byte streaming progress, and 404 detection.
  */
 async function streamFetchFromSupabaseStorage(
   bucket: string,
   storagePath: string,
-  onProgress?: (percent: number, label: string) => void,
-  timeoutMs = 25000
-): Promise<{ blob: Blob | null; status: number }> {
+  noteId?: string,
+  fileName?: string,
+  onProgress?: (percent: number | null, label: string) => void
+): Promise<{ blob: Blob | null; notFound: boolean }> {
   const { url: supabaseUrl, anonKey } = getSupabaseConfig();
   const encodedPath = encodeStoragePath(storagePath);
 
@@ -194,51 +198,49 @@ async function streamFetchFromSupabaseStorage(
     `${supabaseUrl}/storage/v1/object/public/${bucket}/${encodedPath}`
   ];
 
+  console.log(`[NotePipeline] 5. Requesting Supabase Storage: bucket="${bucket}", path="${storagePath}"`);
+
   for (const url of targetUrls) {
-    if (typeof XMLHttpRequest !== "undefined") {
-      const xhrResult = await new Promise<{ blob: Blob | null; status: number }>((resolve) => {
-        try {
-          const xhr = new XMLHttpRequest();
-          xhr.open("GET", url, true);
-          if (anonKey) {
-            xhr.setRequestHeader("apikey", anonKey);
-            xhr.setRequestHeader("Authorization", `Bearer ${anonKey}`);
-          }
-          xhr.responseType = "blob";
-          xhr.timeout = timeoutMs;
+    let controller: AbortController | null = null;
+    let firstByteTimer: any = null;
+    let totalTimeoutTimer: any = null;
+    let receivedFirstByte = false;
+    let receivedBytes = 0;
+    let totalBytes = 0;
 
-          xhr.onprogress = (event) => {
-            if (event.lengthComputable && event.total > 0 && onProgress) {
-              const percent = Math.min(99, Math.max(0, Math.round((event.loaded / event.total) * 100)));
-              onProgress(percent, "Downloading…");
-            }
-          };
-
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300 && xhr.response instanceof Blob && xhr.response.size > 0) {
-              resolve({ blob: xhr.response, status: xhr.status });
-            } else {
-              resolve({ blob: null, status: xhr.status });
-            }
-          };
-
-          xhr.onerror = () => resolve({ blob: null, status: 0 });
-          xhr.ontimeout = () => resolve({ blob: null, status: 408 });
-          xhr.send();
-        } catch {
-          resolve({ blob: null, status: 0 });
-        }
-      });
-
-      if (xhrResult.blob && xhrResult.blob.size > 0) {
-        return xhrResult;
-      }
-    }
-
-    // Fetch stream fallback if XMLHttpRequest is unavailable or failed
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      controller = new AbortController();
+      console.log(`[NotePipeline] 6. Download request started: URL="${url}"`);
+
+      // Strict 10-second first byte timeout
+      firstByteTimer = setTimeout(() => {
+        if (!receivedFirstByte && controller) {
+          console.error(`[NotePipeline] Timeout: First byte not received within 10 seconds.`, {
+            noteId,
+            fileName,
+            bucket,
+            storage_path: storagePath,
+            timeoutReason: "First byte timeout (10s threshold exceeded)",
+            bytesReceived: 0
+          });
+          controller.abort();
+        }
+      }, 10000);
+
+      // Max total download timeout (30 seconds)
+      totalTimeoutTimer = setTimeout(() => {
+        if (controller) {
+          console.error(`[NotePipeline] Timeout: Total download exceeded 30s limit.`, {
+            noteId,
+            fileName,
+            bucket,
+            storage_path: storagePath,
+            bytesReceived: receivedBytes
+          });
+          controller.abort();
+        }
+      }, 30000);
+
       const headers: Record<string, string> = {};
       if (anonKey) {
         headers["apikey"] = anonKey;
@@ -246,26 +248,69 @@ async function streamFetchFromSupabaseStorage(
       }
 
       const response = await fetch(url, { signal: controller.signal, headers });
-      clearTimeout(timer);
 
-      if (response.ok) {
-        const contentLength = response.headers.get("content-length");
-        const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+      // Handle 404 / 400 Object Not Found
+      if (response.status === 404 || response.status === 400) {
+        clearTimeout(firstByteTimer);
+        clearTimeout(totalTimeoutTimer);
+        console.error(`[NotePipeline] HTTP ${response.status} Object Not Found from Supabase Storage:`, {
+          noteId,
+          fileName,
+          bucket,
+          storage_path: storagePath,
+          status: response.status
+        });
+        return { blob: null, notFound: true };
+      }
 
-        if (response.body && totalBytes > 0) {
-          const reader = response.body.getReader();
-          let receivedBytes = 0;
-          const chunks: Uint8Array[] = [];
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (value) {
-              chunks.push(value);
-              receivedBytes += value.length;
+      if (!response.ok) {
+        clearTimeout(firstByteTimer);
+        clearTimeout(totalTimeoutTimer);
+        console.warn(`[NotePipeline] Supabase Storage HTTP error ${response.status}:`, {
+          noteId,
+          fileName,
+          bucket,
+          storage_path: storagePath,
+          status: response.status
+        });
+        continue;
+      }
+
+      const contentLength = response.headers.get("content-length");
+      totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+
+      if (response.body) {
+        const reader = response.body.getReader();
+        const chunks: Uint8Array[] = [];
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          if (value && value.length > 0) {
+            if (!receivedFirstByte) {
+              receivedFirstByte = true;
+              clearTimeout(firstByteTimer);
+              console.log(`[NotePipeline] 7. First byte received (Content-Length: ${totalBytes > 0 ? totalBytes : "unknown"})`);
+            }
+
+            chunks.push(value);
+            receivedBytes += value.length;
+
+            if (totalBytes > 0) {
               const percent = Math.min(99, Math.round((receivedBytes / totalBytes) * 100));
+              console.log(`[NotePipeline] 8. Streaming bytes: ${receivedBytes}/${totalBytes} (${percent}%)`);
               if (onProgress) onProgress(percent, "Downloading…");
+            } else {
+              console.log(`[NotePipeline] 8. Streaming bytes: ${receivedBytes} (indeterminate)`);
+              if (onProgress) onProgress(null, "Downloading…");
             }
           }
+        }
+
+        clearTimeout(totalTimeoutTimer);
+
+        if (receivedBytes > 0) {
           const all = new Uint8Array(receivedBytes);
           let offset = 0;
           for (const c of chunks) {
@@ -273,39 +318,60 @@ async function streamFetchFromSupabaseStorage(
             offset += c.length;
           }
           const mimeType = response.headers.get("content-type") || "application/octet-stream";
-          return {
-            blob: new Blob([all], { type: mimeType }),
-            status: response.status
-          };
+          const resultBlob = new Blob([all], { type: mimeType });
+          console.log(`[NotePipeline] 9. Download complete: ${resultBlob.size} bytes received`);
+          return { blob: resultBlob, notFound: false };
         }
-
+      } else {
+        // Body fallback
         const fetchedBlob = await response.blob();
+        clearTimeout(firstByteTimer);
+        clearTimeout(totalTimeoutTimer);
         if (fetchedBlob && fetchedBlob.size > 0) {
-          return { blob: fetchedBlob, status: response.status };
+          console.log(`[NotePipeline] 9. Download complete: ${fetchedBlob.size} bytes received`);
+          return { blob: fetchedBlob, notFound: false };
         }
       }
-    } catch {
-      // Continue to fallback
+    } catch (err: any) {
+      if (firstByteTimer) clearTimeout(firstByteTimer);
+      if (totalTimeoutTimer) clearTimeout(totalTimeoutTimer);
+      console.warn(`[NotePipeline] Fetch attempt failed for ${url}:`, err?.message || err);
     }
   }
 
-  // Final fallback: Use Supabase JS Storage SDK download()
+  // Final fallback: Use Supabase JS Storage SDK download() with 10s timeout
   try {
-    console.log(`[NativePdfService] Using Supabase SDK download for bucket="${bucket}", path="${storagePath}"`);
+    console.log(`[NotePipeline] Trying Supabase JS SDK download for bucket="${bucket}", path="${storagePath}"`);
+    const sdkPromise = supabase.storage.from(bucket).download(storagePath);
     const sdkRes = await withTimeout<{ data: Blob | null; error: any }>(
-      supabase.storage.from(bucket).download(storagePath),
-      timeoutMs,
-      "Supabase SDK download timeout"
+      sdkPromise,
+      10000,
+      "Supabase SDK download timeout (10s limit exceeded)"
     );
-    if (!sdkRes.error && sdkRes.data && sdkRes.data.size > 0) {
+
+    if (sdkRes.error) {
+      const errMsg = (sdkRes.error.message || "").toLowerCase();
+      if (errMsg.includes("not found") || sdkRes.error.statusCode === "404" || sdkRes.error.status === 404) {
+        console.error(`[NotePipeline] Supabase SDK: Object Not Found:`, {
+          noteId,
+          fileName,
+          bucket,
+          storage_path: storagePath,
+          error: sdkRes.error
+        });
+        return { blob: null, notFound: true };
+      }
+      console.warn("[NotePipeline] Supabase SDK download error:", sdkRes.error);
+    } else if (sdkRes.data && sdkRes.data.size > 0) {
+      console.log(`[NotePipeline] 9. Download complete (via SDK): ${sdkRes.data.size} bytes received`);
       if (onProgress) onProgress(100, "Downloading…");
-      return { blob: sdkRes.data, status: 200 };
+      return { blob: sdkRes.data, notFound: false };
     }
-  } catch (sdkErr) {
-    console.warn("[NativePdfService] Supabase SDK download exception:", sdkErr);
+  } catch (sdkErr: any) {
+    console.warn("[NotePipeline] Supabase SDK download exception:", sdkErr?.message || sdkErr);
   }
 
-  return { blob: null, status: 0 };
+  return { blob: null, notFound: false };
 }
 
 /**
@@ -314,7 +380,6 @@ async function streamFetchFromSupabaseStorage(
 async function launchNativeViewerOnce(uri: string, contentType: string): Promise<void> {
   const now = Date.now();
   if (isLaunchingViewerMutex || now - lastViewerLaunchTimestamp < 2500) {
-    // Avoid duplicate intent launches if tapped repeatedly
     return;
   }
   isLaunchingViewerMutex = true;
@@ -382,26 +447,26 @@ async function checkAndValidateLocalCache(
 }
 
 /**
- * Main function: Opens a Note PDF or Image.
- * Flow:
- * 1. Check local cache (verify size > 0 and extension). If valid -> open immediately via native viewer.
- * 2. If corrupted or missing: Delete corrupted file and download directly from Supabase Storage.
- * 3. Stream download with real byte progress (0% -> 100%).
- * 4. Save to local cache and verify integrity (size > 0).
- * 5. Open using native PDF / Image viewer.
- * 6. Never open browser download URLs or show popup-based note viewers.
+ * Main function: Opens a Note PDF or Image directly from Supabase Storage with local cache and native viewer.
  */
 export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<OpenPdfResult> {
   const { url, storagePath, bucket, noteId, fileName, mimeType, fileType, onProgress } = options;
 
-  const updateProgress = (percent: number, text: string) => {
+  console.log(`[NotePipeline] 1. Student tapped note: noteId="${noteId || "unknown"}", title="${options.title || "unknown"}"`);
+  console.log(`[NotePipeline] 2. Fetched note metadata:`, {
+    noteId,
+    title: options.title,
+    fileName,
+    bucket,
+    storagePath,
+    url,
+    mimeType,
+    fileType
+  });
+
+  const updateProgress = (percent: number | null, text: string) => {
     if (onProgress) onProgress(percent, text);
   };
-
-  if (!url && !storagePath) {
-    console.error("[NativePdfService] Missing note file location or URL:", { noteId, storagePath, url });
-    throw new Error(USER_FRIENDLY_NOTE_ERROR);
-  }
 
   const isImg = isImageFile(fileName, url || storagePath, mimeType, fileType);
   const ext = getFileExtension(fileName || storagePath || url || "", isImg);
@@ -409,11 +474,31 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
 
   const activeBucket = getBucketName(bucket);
   const activePath = sanitizeStoragePath(storagePath || url, activeBucket);
+
+  console.log(`[NotePipeline] 3. storage_path = "${activePath}"`);
+  console.log(`[NotePipeline] 4. bucket = "${activeBucket}"`);
+
+  // Validate metadata before attempting any download
+  if (!activePath || activePath.trim().length === 0) {
+    console.error(`[NotePipeline] Validation failed: storage_path is empty or missing`, { noteId, storagePath, url });
+    throw new Error(USER_FRIENDLY_NOTE_UNAVAILABLE);
+  }
+
+  if (!activeBucket || activeBucket.trim().length === 0) {
+    console.error(`[NotePipeline] Validation failed: bucket is empty or missing`, { noteId, bucket });
+    throw new Error(USER_FRIENDLY_NOTE_UNAVAILABLE);
+  }
+
+  if (!ext || ext.trim().length === 0) {
+    console.error(`[NotePipeline] Validation failed: file extension is missing`, { fileName, storagePath, url });
+    throw new Error(USER_FRIENDLY_NOTE_UNAVAILABLE);
+  }
+
   const cacheFileName = getPdfCacheFileName(activePath || url, noteId, isImg, ext);
 
   // In-flight deduplication: If download/open is already running for this note, return existing promise
   if (inFlightOperations.has(cacheFileName)) {
-    console.log(`[NativePdfService] Reusing existing in-flight download/open for ${cacheFileName}`);
+    console.log(`[NotePipeline] Reusing existing in-flight download/open for ${cacheFileName}`);
     return inFlightOperations.get(cacheFileName)!;
   }
 
@@ -421,11 +506,11 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
     const isNative = isNativePlatform();
 
     // Step 1: Look for cached file
-    updateProgress(0, "Preparing Note…");
+    updateProgress(null, "Preparing Note…");
 
     const cacheCheck = await checkAndValidateLocalCache(cacheFileName, ext);
     if (cacheCheck.exists && cacheCheck.uri) {
-      console.log("[NativePdfService] CACHE_HIT - opening directly:", {
+      console.log("[NotePipeline] CACHE_HIT - opening directly from local cache:", {
         noteId,
         bucket: activeBucket,
         storagePath: activePath,
@@ -437,10 +522,11 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
 
       if (isNative) {
         try {
+          console.log(`[NotePipeline] 11. Opening native viewer: uri="${cacheCheck.uri}", mimeType="${contentType}"`);
           await launchNativeViewerOnce(cacheCheck.uri, contentType);
           return { success: true, cachedPath: cacheCheck.uri, isNative: true };
         } catch (openerErr: any) {
-          console.warn("[NativePdfService] Opener failed on cached file, removing cache and retrying:", openerErr);
+          console.warn("[NotePipeline] Opener failed on cached file, removing cache and retrying:", openerErr);
           await Filesystem.deleteFile({ path: cacheFileName, directory: Directory.Cache }).catch(() => {});
           if (!isRetry) {
             return executeOperation(true);
@@ -463,7 +549,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
       }
     }
 
-    console.log("[NativePdfService] CACHE_MISS - fetching from Supabase Storage:", {
+    console.log("[NotePipeline] CACHE_MISS - fetching directly from Supabase Storage:", {
       noteId,
       bucket: activeBucket,
       storagePath: activePath,
@@ -471,20 +557,32 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
     });
 
     // Step 2: Fetch directly from Supabase Storage with real byte progress
-    updateProgress(0, "Downloading…");
+    updateProgress(null, "Connecting…");
 
     let pdfBlob: Blob | null = null;
+    let isNotFound = false;
 
     if (activePath && !url.startsWith("data:") && !url.startsWith("blob:")) {
       const streamRes = await streamFetchFromSupabaseStorage(
         activeBucket,
         activePath,
-        updateProgress,
-        25000
+        noteId,
+        fileName,
+        updateProgress
       );
-      if (streamRes.blob && streamRes.blob.size > 0) {
-        pdfBlob = streamRes.blob;
-      }
+      pdfBlob = streamRes.blob;
+      isNotFound = streamRes.notFound;
+    }
+
+    // Stop immediately if object not found (404)
+    if (isNotFound) {
+      console.error(`[NotePipeline] Aborting: Note object not found in Supabase Storage.`, {
+        noteId,
+        fileName,
+        bucket: activeBucket,
+        storage_path: activePath
+      });
+      throw new Error(USER_FRIENDLY_NOTE_UNAVAILABLE);
     }
 
     // Fallback for inline Base64 data URLs
@@ -494,15 +592,17 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
 
     // Validation: Downloaded blob must exist and not be empty
     if (!pdfBlob || pdfBlob.size <= 0) {
-      console.error("[NativePdfService] Supabase Storage download returned empty or failed:", {
+      console.error("[NotePipeline] Supabase Storage download returned empty or failed:", {
         noteId,
+        fileName,
         bucket: activeBucket,
-        storagePath: activePath,
-        cacheHit: false
+        storage_path: activePath,
+        bytesReceived: 0,
+        isRetry
       });
 
       if (!isRetry) {
-        console.log("[NativePdfService] Retrying Supabase Storage download once…");
+        console.log("[NotePipeline] Automatically retrying Supabase Storage download once…");
         return executeOperation(true);
       }
       throw new Error(USER_FRIENDLY_NOTE_ERROR);
@@ -512,7 +612,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
     if (!isImg) {
       const isValidHeader = await validatePdfHeader(pdfBlob);
       if (!isValidHeader) {
-        console.error("[NativePdfService] Corrupted PDF file header:", {
+        console.error("[NotePipeline] Corrupted PDF file header:", {
           noteId,
           bucket: activeBucket,
           storagePath: activePath,
@@ -551,7 +651,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
 
         if (!statCheck || (statCheck as any).size <= 0) {
           await Filesystem.deleteFile({ path: cacheFileName, directory: Directory.Cache }).catch(() => {});
-          throw new Error("Local cache verification failed.");
+          throw new Error("Local cache verification failed: size is 0");
         }
 
         const uriResult = await Filesystem.getUri({
@@ -559,12 +659,15 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
           directory: Directory.Cache,
         });
 
+        console.log(`[NotePipeline] 10. Saved locally: "${cacheFileName}" (${(statCheck as any).size} bytes)`);
+
         // Step 4: Open native PDF / Image viewer
+        console.log(`[NotePipeline] 11. Opening native viewer: uri="${uriResult.uri}", mimeType="${contentType}"`);
         await launchNativeViewerOnce(uriResult.uri, contentType);
 
         return { success: true, cachedPath: uriResult.uri, isNative: true };
       } catch (nativeErr: any) {
-        console.error("[NativePdfService] Error in native save/open pipeline:", nativeErr);
+        console.error("[NotePipeline] Error in native save/open pipeline:", nativeErr);
         if (!isRetry) {
           return executeOperation(true);
         }

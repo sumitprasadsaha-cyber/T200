@@ -124,10 +124,24 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
     }
   }
 
-  // 1. Remove quotes
+  // 1. Normalize slashes & remove quotes
+  cleaned = cleaned.replace(/\\/g, "/");
   cleaned = cleaned.replace(/^["']|["']$/g, "");
 
-  // 2. Strip query parameters and hash fragments if not a full HTTPS URL
+  // 2. Safely decode URI encoded characters if present (handles %20, %2F, double encoded %2520, etc.)
+  if (cleaned.includes("%")) {
+    try {
+      let decoded = decodeURIComponent(cleaned);
+      if (decoded.includes("%")) {
+        decoded = decodeURIComponent(decoded);
+      }
+      cleaned = decoded;
+    } catch {
+      // Keep cleaned as is if decode fails
+    }
+  }
+
+  // 3. Strip query parameters and hash fragments if not a full HTTPS URL
   if (cleaned.includes("?") && !cleaned.startsWith("http://") && !cleaned.startsWith("https://")) {
     cleaned = cleaned.split("?")[0];
   }
@@ -135,7 +149,7 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
     cleaned = cleaned.split("#")[0];
   }
 
-  // 3. Handle gs:// protocol URLs
+  // 4. Handle gs:// protocol URLs
   if (cleaned.startsWith("gs://")) {
     const gsWithoutPrefix = cleaned.substring(5);
     const slashIdx = gsWithoutPrefix.indexOf("/");
@@ -146,7 +160,7 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
     }
   }
 
-  // 4. Extract path from full HTTPS URLs if provided
+  // 5. Extract path from full HTTPS URLs if provided
   if (cleaned.startsWith("http://") || cleaned.startsWith("https://")) {
     try {
       const urlObj = new URL(cleaned);
@@ -169,10 +183,10 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
     }
   }
 
-  // 5. Remove leading slashes
-  cleaned = cleaned.replace(/^\/+/, "");
+  // 6. Remove leading and duplicate slashes
+  cleaned = cleaned.replace(/^\/+/, "").replace(/\/+/g, "/");
 
-  // 6. Strip duplicate bucket prefix if present
+  // 7. Strip duplicate bucket prefix if present
   const activeBucket = getBucketName(bucketName);
   const prefixes = [
     activeBucket + "/",
@@ -191,10 +205,10 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
   // Strip leading slashes again after prefix removal
   cleaned = cleaned.replace(/^\/+/, "");
 
-  // 7. Remove trailing slashes
+  // 8. Remove trailing slashes
   cleaned = cleaned.replace(/\/+$/, "");
 
-  // 8. Clean individual path segments
+  // 9. Clean individual path segments
   const segments = cleaned
     .split("/")
     .map((seg) => seg.trim())
