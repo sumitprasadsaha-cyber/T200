@@ -4,6 +4,7 @@ export interface ClassNote {
   subject: string; // e.g. "Mathematics", "Science", "English", "Computer Science", "Indian Heritage and Culture", "Economics"
   chapterNo: number;
   chapterName: string;
+  generalStudiesPaper?: string; // e.g. "General Studies Paper I", "General Studies Paper II", "General Studies Paper III", "General Studies Paper IV", "Essay", "CSAT" (UPSC only)
   partLabel?: string; // e.g. "Topic 1", "Topic 2", or legacy part label
   topicNo?: number | string; // e.g. 1, 2, "1.1"
   topicName?: string; // e.g. "Introduction"
@@ -29,6 +30,7 @@ export interface ChapterNote {
   subject?: string;
   chapterNo: number; // Only number!
   chapterName: string; // Chapter name
+  generalStudiesPaper?: string; // e.g. "General Studies Paper I", "General Studies Paper II", "General Studies Paper III", "General Studies Paper IV", "Essay", "CSAT" (UPSC only)
   partLabel?: string; // Optional part label or legacy part label
   topicNo?: number | string; // e.g. 1, 2
   topicName?: string; // e.g. "Introduction"

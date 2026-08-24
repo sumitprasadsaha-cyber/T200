@@ -60,6 +60,15 @@ const DEFAULT_SUBJECTS_BY_CLASS: Record<string, string[]> = {
   "UPSC": ["Polity", "Geography", "History", "Economy", "Environment", "Ethics", "Science & Technology", "Current Affairs", "International Relations", "General Studies"]
 };
 
+const UPSC_GS_PAPERS = [
+  "General Studies Paper I",
+  "General Studies Paper II",
+  "General Studies Paper III",
+  "General Studies Paper IV",
+  "Essay",
+  "CSAT"
+];
+
 export default function AdminNotesView({ notes, students = [], onRefresh }: AdminNotesViewProps) {
   // Tabs & Upload state
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -70,6 +79,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
   const [customClass, setCustomClass] = useState("");
   const [selectedSubject, setSelectedSubject] = useState("Mathematics");
   const [customSubject, setCustomSubject] = useState("");
+  const [generalStudiesPaper, setGeneralStudiesPaper] = useState("General Studies Paper I");
   const [chapterNo, setChapterNo] = useState<number | "">(1);
   const [chapterTitle, setChapterTitle] = useState("");
   const [topicNo, setTopicNo] = useState("");
@@ -324,6 +334,12 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
     return defaults;
   }, [selectedClass, customClass]);
 
+  // Check if current selected class in upload modal is UPSC
+  const isUPSC = useMemo(() => {
+    const cls = selectedClass === "Other" ? customClass : selectedClass;
+    return normalizeClassGrade(cls) === "UPSC";
+  }, [selectedClass, customClass]);
+
   // Filter notes based on Admin search query
   const filteredNotes = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -359,6 +375,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
 
     const finalClass = (selectedClass === "Other" ? customClass : selectedClass).trim();
     const finalSubject = (selectedSubject === "Other" ? customSubject : selectedSubject).trim();
+    const isUPSCClass = normalizeClassGrade(finalClass) === "UPSC";
 
     if (!finalClass) {
       setFormError("Please select or enter a Class.");
@@ -368,12 +385,16 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
       setFormError("Please select or enter a Subject.");
       return;
     }
+    if (isUPSCClass && !generalStudiesPaper.trim()) {
+      setFormError("Please select a General Studies Paper.");
+      return;
+    }
     if (chapterNo === "" || isNaN(Number(chapterNo)) || Number(chapterNo) < 1) {
-      setFormError("Please enter a valid Chapter Number.");
+      setFormError(isUPSCClass ? "Please enter a valid Module Number." : "Please enter a valid Chapter Number.");
       return;
     }
     if (!chapterTitle.trim()) {
-      setFormError("Please enter a Chapter Title.");
+      setFormError(isUPSCClass ? "Please enter a Module Name." : "Please enter a Chapter Title.");
       return;
     }
     if (!pdfFile) {
@@ -436,6 +457,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         subject: finalSubject,
         chapterNo: Number(chapterNo),
         chapterName: chapterTitle.trim(),
+        generalStudiesPaper: isUPSCClass ? generalStudiesPaper.trim() : undefined,
         partLabel: cleanPartLabel ? cleanPartLabel : undefined,
         topicNo: cleanTopicNo ? cleanTopicNo : undefined,
         topicName: cleanTopicName ? cleanTopicName : undefined,
@@ -463,6 +485,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
       setSuccessMsg("Note uploaded successfully!");
 
       // Reset Form
+      setGeneralStudiesPaper("General Studies Paper I");
       setChapterTitle("");
       setTopicNo("");
       setTopicName("");
@@ -1088,7 +1111,15 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
                 </label>
                 <select
                   value={selectedClass}
-                  onChange={(e) => setSelectedClass(e.target.value)}
+                  onChange={(e) => {
+                    const newCls = e.target.value;
+                    setSelectedClass(newCls);
+                    const norm = normalizeClassGrade(newCls === "Other" ? customClass : newCls);
+                    const defs = DEFAULT_SUBJECTS_BY_CLASS[norm];
+                    if (defs && defs.length > 0 && !defs.includes(selectedSubject)) {
+                      setSelectedSubject(defs[0]);
+                    }
+                  }}
                   className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-100 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
                   required
                 >
@@ -1104,7 +1135,15 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
                   <input
                     type="text"
                     value={customClass}
-                    onChange={(e) => setCustomClass(e.target.value)}
+                    onChange={(e) => {
+                      const newCustom = e.target.value;
+                      setCustomClass(newCustom);
+                      const norm = normalizeClassGrade(newCustom);
+                      const defs = DEFAULT_SUBJECTS_BY_CLASS[norm];
+                      if (defs && defs.length > 0 && !defs.includes(selectedSubject)) {
+                        setSelectedSubject(defs[0]);
+                      }
+                    }}
                     placeholder="Enter custom class (e.g. Class 5)"
                     className="w-full mt-2 px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     required
@@ -1143,11 +1182,32 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
                 )}
               </div>
 
+              {/* General Studies Paper (Only for UPSC) */}
+              {isUPSC && (
+                <div>
+                  <label className="block text-xs font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1">
+                    General Studies Paper <span className="text-rose-500">*</span>
+                  </label>
+                  <select
+                    value={generalStudiesPaper}
+                    onChange={(e) => setGeneralStudiesPaper(e.target.value)}
+                    className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-100 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                  >
+                    {UPSC_GS_PAPERS.map((paper) => (
+                      <option key={paper} value={paper}>
+                        {paper}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               {/* Chapter Number & Title */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1">
-                    Chapter Number <span className="text-rose-500">*</span>
+                    {isUPSC ? "Module Number" : "Chapter Number"} <span className="text-rose-500">*</span>
                   </label>
                   <input
                     type="number"
@@ -1162,13 +1222,13 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
 
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1">
-                    Chapter Title <span className="text-rose-500">*</span>
+                    {isUPSC ? "Module Name" : "Chapter Title"} <span className="text-rose-500">*</span>
                   </label>
                   <input
                     type="text"
                     value={chapterTitle}
                     onChange={(e) => setChapterTitle(e.target.value)}
-                    placeholder="e.g. Indian Culture"
+                    placeholder={isUPSC ? "e.g. Indian Polity Fundamentals" : "e.g. Indian Culture"}
                     className="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
                     required
                   />
