@@ -472,14 +472,19 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         uploadPath = `class_notes/${normalizeClassGrade(finalClass).replace(/\s+/g, "_")}/${finalSubject.replace(/\s+/g, "_")}/${Date.now()}_${renamedFileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
       }
 
+      console.log(`[UploadPipeline] [Step 1] Initiating upload to Cloudflare R2... Bucket: academy-connect-files, Path: ${uploadPath}`);
       const uploadRes = await uploadFileToR2(
         "academy-connect-files",
         uploadPath,
         pdfFile,
         renamedFileName,
         "Admin",
-        (percent) => setUploadProgress(percent)
+        (percent) => {
+          setUploadProgress(percent);
+          console.log(`[UploadPipeline] [Progress] Upload progress: ${percent}%`);
+        }
       );
+      console.log(`[UploadPipeline] [Step 2] Upload completed. Response received:`, uploadRes);
 
       const mime = pdfFile.type || (isImg ? "image/jpeg" : "application/pdf");
       const fType: "pdf" | "image" = isImg ? "image" : "pdf";
@@ -518,7 +523,9 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         uploadedBy: "Admin",
       };
 
+      console.log(`[UploadPipeline] [Step 3] Metadata constructed. Persisting to database...`, newNote);
       await saveClassNoteDoc(newNote);
+      console.log(`[UploadPipeline] [Step 4] Metadata inserted successfully: id=${newNote.id}`);
 
       const newClsKey = newNote.classGrade;
       const newSubjKey = `${newNote.classGrade}_${newNote.subject}`;
@@ -532,6 +539,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
       setExpandedSubjects({ [newSubjKey]: true });
       setExpandedChapters({ [newChKey]: true });
 
+      console.log(`[UploadPipeline] [Step 5] Updating React state & displaying success message.`);
       setUploadProgress(100);
       setSuccessMsg("Note uploaded successfully!");
 
@@ -544,6 +552,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
       setPdfFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       setTimeout(() => {
+        console.log(`[UploadPipeline] [Step 6] Closing Upload modal and triggering notes refresh.`);
         setIsUploadModalOpen(false);
         setIsUploading(false);
         setUploadProgress(0);

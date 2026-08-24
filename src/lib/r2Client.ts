@@ -97,9 +97,10 @@ export async function getR2SignedUrl(params: {
 }): Promise<string> {
   const bucket = getR2BucketName(params.bucket);
   const cleanKey = params.key.replace(/^\/+/, "");
+  const baseUrl = getApiBaseUrl();
 
   try {
-    const response = await fetch("/api/r2/signed-url", {
+    const response = await fetch(`${baseUrl}/api/r2/signed-url`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -125,6 +126,13 @@ export async function getR2SignedUrl(params: {
   return getR2PublicUrl(bucket, cleanKey);
 }
 
+function getApiBaseUrl(): string {
+  if (typeof window !== "undefined" && window.location && window.location.origin) {
+    return "";
+  }
+  return "http://localhost:3000";
+}
+
 /**
  * Uploads a file/blob to Cloudflare R2 with progress tracking via backend proxy or presigned PUT URL.
  */
@@ -138,6 +146,7 @@ export async function uploadToR2(params: {
   const bucket = getR2BucketName(params.bucket);
   const cleanKey = params.key.replace(/^\/+/, "");
   const mimeType = params.mimeType || (params.file as any).type || "application/octet-stream";
+  const baseUrl = getApiBaseUrl();
 
   console.log(`[R2Client] Initiating upload to Cloudflare R2: bucket="${bucket}", key="${cleanKey}", size=${params.file.size}`);
 
@@ -145,69 +154,95 @@ export async function uploadToR2(params: {
 
   // Step 1: Upload directly via Same-Origin Backend API Proxy (/api/r2/upload)
   try {
-    const proxyResult = await new Promise<R2UploadResult>((resolve, reject) => {
-      try {
-        const xhr = new XMLHttpRequest();
-        xhr.open(
-          "POST",
-          `/api/r2/upload?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanKey)}&mimeType=${encodeURIComponent(mimeType)}`,
-          true
-        );
-        xhr.setRequestHeader("Content-Type", mimeType);
+    const uploadApiUrl = `${baseUrl}/api/r2/upload?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanKey)}&mimeType=${encodeURIComponent(mimeType)}`;
 
-        if (xhr.upload && params.onProgress) {
-          xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable && e.total > 0) {
-              const pct = Math.min(99, Math.max(0, Math.round((e.loaded / e.total) * 100)));
-              params.onProgress!(pct);
+    if (typeof XMLHttpRequest !== "undefined") {
+      const proxyResult = await new Promise<R2UploadResult>((resolve, reject) => {
+        try {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", uploadApiUrl, true);
+          xhr.setRequestHeader("Content-Type", mimeType);
+
+          if (xhr.upload && params.onProgress) {
+            xhr.upload.onprogress = (e) => {
+              if (e.lengthComputable && e.total > 0) {
+                const pct = Math.min(99, Math.max(0, Math.round((e.loaded / e.total) * 100)));
+                params.onProgress!(pct);
+              }
+            };
+          }
+
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              if (params.onProgress) params.onProgress(100);
+              try {
+                const resData = JSON.parse(xhr.responseText || "{}");
+                const finalUrl = resData.url || getR2PublicUrl(bucket, cleanKey);
+                resolve({
+                  bucket,
+                  key: cleanKey,
+                  url: finalUrl,
+                  size: params.file.size,
+                  mimeType,
+                  etag: resData.etag,
+                });
+              } catch {
+                resolve({
+                  bucket,
+                  key: cleanKey,
+                  url: getR2PublicUrl(bucket, cleanKey),
+                  size: params.file.size,
+                  mimeType,
+                });
+              }
+            } else {
+              let errDetail = `HTTP ${xhr.status}`;
+              try {
+                const parsed = JSON.parse(xhr.responseText);
+                errDetail = parsed.error || parsed.message || errDetail;
+              } catch {
+                // Keep default
+              }
+              reject(new Error(`Binary Proxy: ${errDetail}`));
             }
           };
+
+          xhr.onerror = () => reject(new Error("Binary Proxy: Network Error"));
+          xhr.ontimeout = () => reject(new Error("Binary Proxy: Timeout"));
+          xhr.send(params.file);
+        } catch (err: any) {
+          reject(new Error(`Binary Proxy Exception: ${err?.message || err}`));
         }
+      });
 
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            if (params.onProgress) params.onProgress(100);
-            try {
-              const resData = JSON.parse(xhr.responseText || "{}");
-              const finalUrl = resData.url || getR2PublicUrl(bucket, cleanKey);
-              resolve({
-                bucket,
-                key: cleanKey,
-                url: finalUrl,
-                size: params.file.size,
-                mimeType,
-                etag: resData.etag,
-              });
-            } catch {
-              resolve({
-                bucket,
-                key: cleanKey,
-                url: getR2PublicUrl(bucket, cleanKey),
-                size: params.file.size,
-                mimeType,
-              });
-            }
-          } else {
-            let errDetail = `HTTP ${xhr.status}`;
-            try {
-              const parsed = JSON.parse(xhr.responseText);
-              errDetail = parsed.error || parsed.message || errDetail;
-            } catch {
-              // Keep default
-            }
-            reject(new Error(`Binary Proxy: ${errDetail}`));
-          }
+      return proxyResult;
+    } else {
+      // Direct binary body upload via fetch
+      const res = await fetch(uploadApiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": mimeType,
+          "Content-Length": params.file.size.toString(),
+        },
+        body: params.file,
+      });
+
+      if (res.ok) {
+        if (params.onProgress) params.onProgress(100);
+        const resData = await res.json();
+        return {
+          bucket,
+          key: cleanKey,
+          url: resData.url || getR2PublicUrl(bucket, cleanKey),
+          size: params.file.size,
+          mimeType,
+          etag: resData.etag,
         };
-
-        xhr.onerror = () => reject(new Error("Binary Proxy: Network Error"));
-        xhr.ontimeout = () => reject(new Error("Binary Proxy: Timeout"));
-        xhr.send(params.file);
-      } catch (err: any) {
-        reject(new Error(`Binary Proxy Exception: ${err?.message || err}`));
+      } else {
+        const text = await res.text();
+        errors.push(`Binary Fetch HTTP ${res.status}: ${text}`);
       }
-    });
-
-    return proxyResult;
+    }
   } catch (proxyError: any) {
     console.warn("[R2Client] Binary proxy upload attempt encountered an issue:", proxyError);
     errors.push(proxyError?.message || String(proxyError));
@@ -215,42 +250,50 @@ export async function uploadToR2(params: {
 
   // Step 2: Fallback to Base64 JSON Upload via Backend Proxy
   try {
-    const base64Data = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        const base64 = result.includes(",") ? result.split(",")[1] : result;
-        resolve(base64);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(params.file);
-    });
+    let base64Data = "";
+    if (typeof FileReader !== "undefined") {
+      base64Data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          const base64 = result.includes(",") ? result.split(",")[1] : result;
+          resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(params.file);
+      });
+    } else if (typeof Buffer !== "undefined") {
+      const arrayBuffer = await params.file.arrayBuffer();
+      base64Data = Buffer.from(arrayBuffer).toString("base64");
+    }
 
-    const res = await fetch(`/api/r2/upload?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanKey)}&mimeType=${encodeURIComponent(mimeType)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        bucket,
-        key: cleanKey,
-        base64: base64Data,
-        mimeType,
-      }),
-    });
+    if (base64Data) {
+      const res = await fetch(`${baseUrl}/api/r2/upload?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanKey)}&mimeType=${encodeURIComponent(mimeType)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bucket,
+          key: cleanKey,
+          base64: base64Data,
+          mimeType,
+        }),
+      });
 
-    if (res.ok) {
-      const json = await res.json();
-      if (params.onProgress) params.onProgress(100);
-      return {
-        bucket,
-        key: cleanKey,
-        url: json.url || getR2PublicUrl(bucket, cleanKey),
-        size: params.file.size,
-        mimeType,
-        etag: json.etag,
-      };
-    } else {
-      const text = await res.text();
-      errors.push(`Base64 Proxy HTTP ${res.status}: ${text}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (params.onProgress) params.onProgress(100);
+        return {
+          bucket,
+          key: cleanKey,
+          url: json.url || getR2PublicUrl(bucket, cleanKey),
+          size: params.file.size,
+          mimeType,
+          etag: json.etag,
+        };
+      } else {
+        const text = await res.text();
+        errors.push(`Base64 Proxy HTTP ${res.status}: ${text}`);
+      }
     }
   } catch (base64Err: any) {
     console.warn("[R2Client] Base64 fallback error:", base64Err);
@@ -260,7 +303,7 @@ export async function uploadToR2(params: {
   // Step 3: Presigned URL Fallback
   let presignedPutUrl: string | null = null;
   try {
-    const presignRes = await fetch("/api/r2/signed-url", {
+    const presignRes = await fetch(`${baseUrl}/api/r2/signed-url`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -343,7 +386,8 @@ export async function downloadFromR2(params: {
   const cleanKey = params.key.replace(/^\/+/, "");
 
   // 1. Same-Origin /api/r2/download proxy endpoint (fast streaming, 0 CORS issues)
-  const proxyUrl = `/api/r2/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanKey)}`;
+  const baseUrl = getApiBaseUrl();
+  const proxyUrl = `${baseUrl}/api/r2/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanKey)}`;
   try {
     const proxyRes = await fetch(proxyUrl);
     if (proxyRes.ok) {
@@ -382,11 +426,12 @@ export async function downloadFromR2(params: {
 export async function deleteFromR2(params: {
   bucket?: string;
   key: string;
-}): Promise<{ success: boolean; bucket: string; key: string }> {
+  }): Promise<{ success: boolean; bucket: string; key: string }> {
   const bucket = getR2BucketName(params.bucket);
   const cleanKey = params.key.replace(/^\/+/, "");
+  const baseUrl = getApiBaseUrl();
 
-  const response = await fetch("/api/r2/delete", {
+  const response = await fetch(`${baseUrl}/api/r2/delete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ bucket, key: cleanKey }),
@@ -415,12 +460,13 @@ export async function deleteMultipleFromR2(params: {
 }): Promise<{ success: boolean; deleted: string[] }> {
   const bucket = getR2BucketName(params.bucket);
   const cleanKeys = params.keys.map((k) => k.replace(/^\/+/, "")).filter(Boolean);
+  const baseUrl = getApiBaseUrl();
 
   if (cleanKeys.length === 0) {
     return { success: true, deleted: [] };
   }
 
-  const response = await fetch("/api/r2/delete-multiple", {
+  const response = await fetch(`${baseUrl}/api/r2/delete-multiple`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ bucket, keys: cleanKeys }),
@@ -451,8 +497,9 @@ export async function listFromR2(params: {
 }): Promise<R2ObjectInfo[]> {
   const bucket = getR2BucketName(params.bucket);
   const cleanPrefix = (params.prefix || "").replace(/^\/+/, "");
+  const baseUrl = getApiBaseUrl();
 
-  const response = await fetch("/api/r2/list", {
+  const response = await fetch(`${baseUrl}/api/r2/list`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

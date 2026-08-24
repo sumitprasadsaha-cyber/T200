@@ -195,7 +195,8 @@ async function streamFetchFromR2Storage(
   // 2) Public R2 URL (if available), 3) Presigned URL
   const targetUrls: string[] = [];
 
-  const proxyUrl = `/api/r2/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanPath)}`;
+  const baseUrl = typeof window !== "undefined" && window.location?.origin ? "" : "http://localhost:3000";
+  const proxyUrl = `${baseUrl}/api/r2/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanPath)}`;
   targetUrls.push(proxyUrl);
 
   const publicUrl = getR2PublicUrl(bucket, cleanPath);

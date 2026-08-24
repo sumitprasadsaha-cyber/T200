@@ -13,11 +13,12 @@ import { getFirebaseDb, OperationType, handleFirestoreError } from "./firebase";
 import { Student, ClassNote, TestAttemptRecord } from "../types";
 import { 
   safeLocalStorageSetItem as safeSetStorage, 
+  safeLocalStorageGetItem as safeGetStorage,
   safeLocalStorageGetItem, 
   safeLocalStorageRemoveItem 
 } from "./safeStorage";
 
-export { safeSetStorage };
+export { safeSetStorage, safeGetStorage };
 
 // Local storage keys for fallback/offline sandbox mode
 const STORAGE_KEY_STUDENTS = "tuition_students_data";
@@ -102,7 +103,7 @@ function notifyLocalStudentsListeners() {
 
 // Helper to get local students
 export function getLocalStudents(): Student[] {
-  const cached = localStorage.getItem(STORAGE_KEY_STUDENTS);
+  const cached = safeGetStorage(STORAGE_KEY_STUDENTS);
   if (cached) {
     try {
       const parsed = JSON.parse(cached);
