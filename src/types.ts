@@ -23,12 +23,15 @@ export interface ClassNote {
   storage_path?: string; // exact UPSC metadata specification
   bucket?: string;
   fileType?: "pdf" | "image";
+  fileSize?: number;
+  file_size?: number;
   mimeType?: string;
   mime_type?: string; // exact UPSC metadata specification
   createdAt: string;
   uploadedAt?: string;
   uploaded_at?: string; // exact UPSC metadata specification
   updatedAt?: string;
+  updated_at?: string;
   uploadedBy?: string;
 
   // Student Access Control metadata

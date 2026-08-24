@@ -28,7 +28,7 @@ import { saveClassNoteDoc, deleteClassNoteDoc } from "../lib/firestoreService";
 import { groupClassNotesHierarchy, normalizeClassGrade, isClassGradeMatching, isSubjectMatching, generateUPSCStoragePath, inferGSPaperFromSubject } from "../utils/classNoteHelper";
 import { getFormattedTopicLabel, isFileNameRedundant } from "../utils/chapterNotesHelper";
 import PdfViewer from "./PdfViewer";
-import { isImageFile } from "../lib/nativePdfService";
+import { isImageFile, invalidateNoteCache } from "../lib/nativePdfService";
 import AdminPracticeTestModal from "./AdminPracticeTestModal";
 import { getFullChapterQuestions } from "../utils/assessmentParser";
 
@@ -110,6 +110,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
   const [replaceNote, setReplaceNote] = useState<ClassNote | null>(null);
   const [replaceFile, setReplaceFile] = useState<File | null>(null);
   const [isReplacing, setIsReplacing] = useState(false);
+  const [replaceError, setReplaceError] = useState<string | null>(null);
   const replaceFileInputRef = useRef<HTMLInputElement>(null);
 
   // Delete Modal state
@@ -649,32 +650,115 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
     }
   };
 
+  // Open Replace Modal with Pre-flight Validation and Pipeline Logging
+  const handleOpenReplace = (note: ClassNote) => {
+    console.log(`[ReplacePipeline] 1. User tapped Replace for note "${note.id}"`);
+    console.log(`[ReplacePipeline] 2. Loaded existing note record:`, note);
+
+    const isUPSC = normalizeClassGrade(note.classGrade) === "UPSC";
+    const noteId = note.id;
+    const bucket = note.bucket || "academy-connect-files";
+    const storagePath = note.storagePath || (note as any).storage_path || "";
+    const filename = note.pdfFileName || (note as any).fileName || (note as any).filename || (storagePath ? storagePath.split("/").pop() : "");
+    const mimeType = note.mimeType || (note as any).mime_type || (note.fileType === "image" ? "image/jpeg" : "application/pdf");
+
+    console.log(`[ReplacePipeline] 3. Resolved note id: "${noteId}"`);
+    console.log(`[ReplacePipeline] 4. Resolved bucket: "${bucket}"`);
+    console.log(`[ReplacePipeline] 5. Resolved storage_path: "${storagePath}"`);
+    console.log(`[ReplacePipeline] Resolved filename: "${filename}", mime_type: "${mimeType}"`);
+
+    // Verify existing metadata
+    const missing: string[] = [];
+    if (!noteId) missing.push("note id");
+    if (!bucket) missing.push("bucket");
+    if (!storagePath) missing.push("storage_path");
+    if (!filename) missing.push("filename");
+    if (!mimeType) missing.push("mime_type");
+
+    if (missing.length > 0) {
+      const errorMsg = `Invalid note metadata: Missing required fields (${missing.join(", ")}). Unable to replace file.`;
+      console.error(`[ReplacePipeline] Pre-validation failed:`, errorMsg, note);
+      alert(errorMsg);
+      return;
+    }
+
+    setReplaceError(null);
+    setReplaceNote(note);
+    setReplaceFile(null);
+    if (replaceFileInputRef.current) {
+      replaceFileInputRef.current.value = "";
+    }
+  };
+
   // Save Replace PDF / Image
   const handleSaveReplacePdf = async () => {
-    if (!replaceNote || !replaceFile) return;
+    if (!replaceNote) {
+      const err = "No target note selected for replacement.";
+      console.error(`[ReplacePipeline] ${err}`);
+      setReplaceError(err);
+      return;
+    }
+
+    if (!replaceFile) {
+      const err = "Please select a new PDF document or Image file to proceed with replacement.";
+      console.error(`[ReplacePipeline] ${err}`);
+      setReplaceError(err);
+      return;
+    }
 
     const isPdf = replaceFile.type === "application/pdf" || replaceFile.name.toLowerCase().endsWith(".pdf");
     const isImg = replaceFile.type.startsWith("image/") || /\.(png|jpg|jpeg|webp|gif|bmp|svg)$/i.test(replaceFile.name);
 
     if (!isPdf && !isImg) {
-      alert("Please select a valid PDF document or Image file.");
+      const err = "Invalid file type: Please select a valid PDF (.pdf) or Image file (.jpg, .png, .webp).";
+      setReplaceError(err);
+      alert(err);
+      return;
+    }
+
+    const isUPSC = normalizeClassGrade(replaceNote.classGrade) === "UPSC";
+    const noteId = replaceNote.id;
+    const bucket = replaceNote.bucket || "academy-connect-files";
+    const oldStoragePath = replaceNote.storagePath || (replaceNote as any).storage_path || "";
+    const oldFilename = replaceNote.pdfFileName || (replaceNote as any).fileName || (replaceNote as any).filename || (oldStoragePath ? oldStoragePath.split("/").pop() : "");
+    const oldMimeType = replaceNote.mimeType || (replaceNote as any).mime_type || (replaceNote.fileType === "image" ? "image/jpeg" : "application/pdf");
+
+    console.log(`[ReplacePipeline] Starting replace execution for note "${noteId}" (Class: "${replaceNote.classGrade}", UPSC: ${isUPSC})`);
+    console.log(`[ReplacePipeline] 2. Loaded existing note record:`, replaceNote);
+    console.log(`[ReplacePipeline] 3. Resolved note id: "${noteId}"`);
+    console.log(`[ReplacePipeline] 4. Resolved bucket: "${bucket}"`);
+    console.log(`[ReplacePipeline] 5. Resolved storage_path: "${oldStoragePath}"`);
+    console.log(`[ReplacePipeline] 6. Selected new file: "${replaceFile.name}" (${(replaceFile.size / (1024 * 1024)).toFixed(2)} MB, type: "${replaceFile.type}")`);
+
+    // Verify existing metadata
+    const missingMetadata: string[] = [];
+    if (!noteId) missingMetadata.push("note id");
+    if (!bucket) missingMetadata.push("bucket");
+    if (!oldStoragePath) missingMetadata.push("storage_path");
+    if (!oldFilename) missingMetadata.push("filename");
+    if (!oldMimeType) missingMetadata.push("mime_type");
+
+    if (missingMetadata.length > 0) {
+      const errorMsg = `Missing required note metadata: ${missingMetadata.join(", ")}. Replacement halted.`;
+      console.error(`[ReplacePipeline] Metadata validation failed: ${errorMsg}`);
+      setReplaceError(errorMsg);
+      alert(errorMsg);
+      return;
+    }
+
+    // Verify storage path format
+    if (typeof oldStoragePath !== "string" || oldStoragePath.trim() === "") {
+      const errorMsg = "Invalid storage path on existing note record.";
+      console.error(`[ReplacePipeline] ${errorMsg}`);
+      setReplaceError(errorMsg);
+      alert(errorMsg);
       return;
     }
 
     setIsReplacing(true);
-    try {
-      // 1. Delete old file from storage if path exists
-      if (replaceNote.storagePath) {
-        try {
-          await deleteFileFromStorage(replaceNote.storagePath, replaceNote.bucket);
-        } catch (e) {
-          console.warn("Failed deleting old file during replace:", e);
-        }
-      }
+    setReplaceError(null);
 
-      // 2. Upload new file
-      const isUPSC = normalizeClassGrade(replaceNote.classGrade) === "UPSC";
-      const cleanPartLabel = (replaceNote.partLabel || "").trim();
+    try {
       let fileExtension = replaceFile.name.includes(".")
         ? replaceFile.name.split(".").pop()
         : (isImg ? "jpg" : "pdf");
@@ -684,20 +768,38 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
       let renamedFileName = replaceFile.name;
 
       if (isUPSC) {
-        const gsPaper = replaceNote.generalStudiesPaper || (replaceNote as any).gs_paper || inferGSPaperFromSubject(replaceNote.subject);
+        // UPSC HIERARCHY: GS Paper -> Subject -> Module -> Topic (NO Chapter / Chapter Number)
+        const gsPaper = replaceNote.generalStudiesPaper || (replaceNote as any).gs_paper || inferGSPaperFromSubject(replaceNote.subject) || "General Studies Paper I";
+        const subject = replaceNote.subject.trim();
+        const moduleNo = (replaceNote as any).module_number ?? (replaceNote as any).moduleNo ?? replaceNote.chapterNo ?? 1;
+        const moduleName = (replaceNote as any).module_name || (replaceNote as any).moduleName || replaceNote.chapterName || `Module ${moduleNo}`;
+        const topicNo = (replaceNote as any).topic_number ?? replaceNote.topicNo;
+        const topicName = (replaceNote as any).topic_name || replaceNote.topicName || replaceNote.partLabel;
+
+        console.log(`[ReplacePipeline] UPSC Hierarchy resolved:`, {
+          gsPaper,
+          subject,
+          moduleNo,
+          moduleName,
+          topicNo,
+          topicName,
+        });
+
         const upscPathInfo = generateUPSCStoragePath(
           gsPaper,
-          replaceNote.subject,
-          replaceNote.chapterNo,
-          replaceNote.chapterName,
-          replaceNote.topicNo,
-          replaceNote.topicName,
+          subject,
+          moduleNo,
+          moduleName,
+          topicNo,
+          topicName,
           replaceFile.name,
           fileExtension
         );
         uploadPath = upscPathInfo.storagePath;
         renamedFileName = upscPathInfo.fileName;
       } else {
+        // Standard class hierarchy: Class -> Subject -> Chapter -> Topic
+        const cleanPartLabel = (replaceNote.partLabel || "").trim();
         if (cleanPartLabel) {
           const hasExtension = cleanPartLabel.toLowerCase().endsWith(`.${fileExtension.toLowerCase()}`);
           renamedFileName = hasExtension ? cleanPartLabel : `${cleanPartLabel}.${fileExtension}`;
@@ -705,20 +807,50 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         uploadPath = `class_notes/${normalizeClassGrade(replaceNote.classGrade).replace(/\s+/g, "_")}/${replaceNote.subject.replace(/\s+/g, "_")}/${Date.now()}_${renamedFileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
       }
 
-      const uploadRes = await uploadFileToSupabase(
-        "academy-connect-files",
-        uploadPath,
-        replaceFile,
-        renamedFileName,
-        "Admin",
-        (percent) => setUploadProgress(percent)
-      );
+      console.log(`[ReplacePipeline] Target storage upload path: "${uploadPath}" (filename: "${renamedFileName}")`);
 
+      // 7. Deleting old storage object (if applicable)
+      if (oldStoragePath) {
+        console.log(`[ReplacePipeline] 7. Deleting old storage object (if applicable): "${oldStoragePath}" from bucket "${bucket}"`);
+        try {
+          await deleteFileFromStorage(oldStoragePath, bucket);
+          console.log(`[ReplacePipeline] Old storage object removed: "${oldStoragePath}"`);
+        } catch (delErr) {
+          // If existing object was already missing or deleted, do not abort
+          console.warn(`[ReplacePipeline] Notice: Existing storage object was not present or already removed (proceeding with upload):`, delErr);
+        }
+      }
+
+      // 8. Uploading new file
+      console.log(`[ReplacePipeline] 8. Uploading new file to Supabase Storage: "${uploadPath}"`);
+      let uploadRes: { storagePath: string; downloadUrl: string; bucket: string };
+      try {
+        uploadRes = await uploadFileToSupabase(
+          bucket,
+          uploadPath,
+          replaceFile,
+          renamedFileName,
+          "Admin",
+          (percent) => setUploadProgress(percent)
+        );
+      } catch (uploadErr: any) {
+        const uploadDetail = uploadErr?.message || "Supabase Storage upload error";
+        console.error(`[ReplacePipeline] Storage upload failed:`, uploadErr);
+        throw new Error(`Storage upload failed: ${uploadDetail}`);
+      }
+
+      // 9. Upload complete
+      console.log(`[ReplacePipeline] 9. Upload complete:`, uploadRes);
+
+      // 10. Updating database record
+      console.log(`[ReplacePipeline] 10. Updating database record for note "${noteId}"`);
       const mime = replaceFile.type || (isImg ? "image/jpeg" : "application/pdf");
       const fType: "pdf" | "image" = isImg ? "image" : "pdf";
+      const nowIso = new Date().toISOString();
 
       const updatedNote: ClassNote = {
         ...replaceNote,
+        // Update ONLY file-related fields and update timestamps:
         pdfUrl: uploadRes.downloadUrl,
         pdfFileName: renamedFileName,
         fileName: renamedFileName,
@@ -727,21 +859,71 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         storage_path: uploadRes.storagePath,
         bucket: uploadRes.bucket,
         fileType: fType,
+        fileSize: replaceFile.size,
+        file_size: replaceFile.size,
         mimeType: mime,
         mime_type: mime,
-        createdAt: new Date().toISOString(),
-        uploadedAt: new Date().toISOString(),
-        uploaded_at: new Date().toISOString(),
+        updatedAt: nowIso,
+        updated_at: nowIso,
+        // Explicitly preserve all UPSC / class / subject / module / topic / access / created timestamps
+        id: replaceNote.id,
+        classGrade: replaceNote.classGrade,
+        subject: replaceNote.subject,
+        chapterNo: replaceNote.chapterNo,
+        chapterName: replaceNote.chapterName,
+        moduleNo: replaceNote.moduleNo,
+        moduleName: replaceNote.moduleName,
+        module_number: replaceNote.module_number,
+        module_name: replaceNote.module_name,
+        generalStudiesPaper: replaceNote.generalStudiesPaper,
+        gs_paper: (replaceNote as any).gs_paper,
+        partLabel: replaceNote.partLabel,
+        topicNo: replaceNote.topicNo,
+        topicName: replaceNote.topicName,
+        topic_number: (replaceNote as any).topic_number,
+        topic_name: (replaceNote as any).topic_name,
+        accessType: replaceNote.accessType,
+        allowedStudentIds: replaceNote.allowedStudentIds,
+        allowedClasses: replaceNote.allowedClasses,
+        createdAt: replaceNote.createdAt,
+        uploadedAt: replaceNote.uploadedAt || replaceNote.createdAt,
+        uploaded_at: (replaceNote as any).uploaded_at || replaceNote.createdAt,
+        uploadedBy: replaceNote.uploadedBy || "Admin",
       };
 
-      await saveClassNoteDoc(updatedNote);
+      try {
+        await saveClassNoteDoc(updatedNote);
+        console.log(`[ReplacePipeline] Database record updated successfully for note "${noteId}"`);
+      } catch (dbErr: any) {
+        const dbDetail = dbErr?.message || "Supabase DB update error";
+        console.error(`[ReplacePipeline] Database update failed:`, dbErr);
+        throw new Error(`Database update failed: ${dbDetail}`);
+      }
+
+      // Invalidate caches
+      try {
+        await invalidateNoteCache(noteId);
+        if (oldStoragePath) await invalidateNoteCache(oldStoragePath);
+        if (uploadRes.storagePath) await invalidateNoteCache(uploadRes.storagePath);
+        window.dispatchEvent(new CustomEvent("notes-updated", { detail: { noteId, updatedNote } }));
+      } catch (cacheErr) {
+        console.warn("[ReplacePipeline] Cache invalidation notice:", cacheErr);
+      }
+
+      // 11. Refreshing notes
+      console.log(`[ReplacePipeline] 11. Refreshing notes`);
       setReplaceNote(null);
       setReplaceFile(null);
       if (replaceFileInputRef.current) replaceFileInputRef.current.value = "";
       if (onRefresh) onRefresh();
+
+      // 12. Success
+      console.log(`[ReplacePipeline] 12. Success: Note "${noteId}" replaced cleanly`);
     } catch (e: any) {
-      console.error(e);
-      alert("Unable to replace file. Please try again.");
+      const actualError = e?.message || "An unexpected error occurred during replacement.";
+      console.error(`[ReplacePipeline] Execution stopped with error:`, e);
+      setReplaceError(actualError);
+      alert(`Replace failed: ${actualError}`);
     } finally {
       setIsReplacing(false);
     }
@@ -1112,10 +1294,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
 
                                               {/* Replace PDF */}
                                               <button
-                                                onClick={() => {
-                                                  setReplaceNote(note);
-                                                  setReplaceFile(null);
-                                                }}
+                                                onClick={() => handleOpenReplace(note)}
                                                 className="p-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 border border-indigo-200/50 dark:border-indigo-800/40 transition-all cursor-pointer"
                                                 title="Replace PDF file"
                                               >
@@ -1559,7 +1738,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
       )}
 
       {/* ==================================================== */}
-      {/* REPLACE PDF FILE MODAL                               */}
+      {/* REPLACE PDF / IMAGE FILE MODAL                       */}
       {/* ==================================================== */}
       {replaceNote && (
         <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
@@ -1567,10 +1746,13 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
             <div className="px-5 py-3.5 bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
               <div className="flex items-center gap-2 text-slate-900 dark:text-slate-100 font-bold text-sm">
                 <RefreshCw className="w-4 h-4 text-indigo-500" />
-                Replace PDF File
+                Replace Note Document / Image
               </div>
               <button
-                onClick={() => setReplaceNote(null)}
+                onClick={() => {
+                  setReplaceNote(null);
+                  setReplaceError(null);
+                }}
                 className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1"
               >
                 <X className="w-4 h-4" />
@@ -1578,16 +1760,53 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
             </div>
 
             <div className="p-5 space-y-4">
-              <div className="p-3 bg-indigo-50/50 dark:bg-indigo-950/30 rounded-xl border border-indigo-100 dark:border-indigo-900/40 text-xs">
+              {/* Replace Error Alert */}
+              {replaceError && (
+                <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 rounded-xl text-rose-700 dark:text-rose-300 text-xs font-semibold flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+                  <div>
+                    <span className="font-bold block">Replacement Error:</span>
+                    <span>{replaceError}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Target Note Details */}
+              <div className="p-3 bg-indigo-50/50 dark:bg-indigo-950/30 rounded-xl border border-indigo-100 dark:border-indigo-900/40 text-xs space-y-1">
                 <span className="font-extrabold text-indigo-900 dark:text-indigo-200 block">
                   Target Note:
                 </span>
-                <span className="text-slate-600 dark:text-slate-300 block mt-0.5">
-                  [{replaceNote.classGrade}] {replaceNote.subject} — Chapter {replaceNote.chapterNo}: {replaceNote.chapterName}
-                </span>
-                <span className="text-slate-400 block text-[10px] mt-0.5">
-                  Current file: {replaceNote.pdfFileName}
-                </span>
+                {normalizeClassGrade(replaceNote.classGrade) === "UPSC" ? (
+                  <>
+                    <div className="text-slate-700 dark:text-slate-300 font-medium">
+                      <span className="inline-block px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 font-bold text-[10px] mr-1.5">
+                        UPSC
+                      </span>
+                      {replaceNote.generalStudiesPaper || (replaceNote as any).gs_paper || inferGSPaperFromSubject(replaceNote.subject)}
+                    </div>
+                    <div className="text-slate-600 dark:text-slate-400 text-[11px]">
+                      {replaceNote.subject} &bull; Module {(replaceNote as any).module_number ?? (replaceNote as any).moduleNo ?? replaceNote.chapterNo ?? 1}: {(replaceNote as any).module_name || (replaceNote as any).moduleName || replaceNote.chapterName || `Module ${replaceNote.chapterNo}`}
+                    </div>
+                    {((replaceNote as any).topic_number !== undefined || replaceNote.topicNo !== undefined || replaceNote.topicName || (replaceNote as any).topic_name || replaceNote.partLabel) && (
+                      <div className="text-indigo-600 dark:text-indigo-400 font-semibold text-[11px]">
+                        Topic: {getFormattedTopicLabel({
+                          topicNo: (replaceNote as any).topic_number ?? replaceNote.topicNo,
+                          topicName: (replaceNote as any).topic_name || replaceNote.topicName || replaceNote.partLabel,
+                          partLabel: replaceNote.partLabel,
+                          pdfFileName: replaceNote.pdfFileName
+                        })}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-slate-600 dark:text-slate-300">
+                    [{replaceNote.classGrade}] {replaceNote.subject} &mdash; Chapter {replaceNote.chapterNo}: {replaceNote.chapterName}
+                    {replaceNote.partLabel && ` (${replaceNote.partLabel})`}
+                  </div>
+                )}
+                <div className="text-slate-400 dark:text-slate-500 text-[10px] pt-0.5">
+                  Current file: <span className="font-mono">{replaceNote.pdfFileName || (replaceNote as any).fileName || "document.pdf"}</span>
+                </div>
               </div>
 
               <div>
@@ -1601,25 +1820,53 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     if (f) {
+                      console.log(`[ReplacePipeline] 6. Selected new file: "${f.name}" (${(f.size / (1024 * 1024)).toFixed(2)} MB, type: "${f.type}")`);
                       const isPdf = f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf");
                       const isImg = f.type.startsWith("image/") || /\.(png|jpg|jpeg|webp|gif|bmp|svg)$/i.test(f.name);
                       if (!isPdf && !isImg) {
-                        alert("Please select a valid PDF document or Image file.");
+                        const err = "Please select a valid PDF document (.pdf) or image file (.jpg, .png, etc.).";
+                        setReplaceError(err);
+                        alert(err);
                         setReplaceFile(null);
                         return;
                       }
+                      setReplaceError(null);
                       setReplaceFile(f);
                     }
                   }}
-                  className="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer"
+                  className="w-full text-xs text-slate-500 dark:text-slate-400 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-indigo-50 file:text-indigo-700 dark:file:bg-indigo-950/60 dark:file:text-indigo-300 hover:file:bg-indigo-100 cursor-pointer"
                 />
+                {replaceFile && (
+                  <div className="text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold mt-1">
+                    Ready to upload: {replaceFile.name} ({(replaceFile.size / (1024 * 1024)).toFixed(2)} MB)
+                  </div>
+                )}
               </div>
+
+              {/* Upload Progress */}
+              {isReplacing && (
+                <div className="space-y-1 pt-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-indigo-600 dark:text-indigo-400">
+                    <span>Uploading & Replacing...</span>
+                    <span>{uploadProgress}%</span>
+                  </div>
+                  <div className="w-full bg-slate-200 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                    <div
+                      className="bg-indigo-600 h-full transition-all duration-200"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
 
               <div className="pt-3 flex justify-end gap-2 border-t border-slate-200 dark:border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setReplaceNote(null)}
-                  className="px-3 py-1.5 text-xs font-bold text-slate-500 hover:text-slate-700"
+                  onClick={() => {
+                    setReplaceNote(null);
+                    setReplaceError(null);
+                  }}
+                  className="px-3 py-1.5 text-xs font-bold text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
                   disabled={isReplacing}
                 >
                   Cancel
@@ -1630,7 +1877,17 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
                   disabled={!replaceFile || isReplacing}
                   className="px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-lg shadow cursor-pointer flex items-center gap-1.5"
                 >
-                  {isReplacing ? "Replacing..." : "Replace File"}
+                  {isReplacing ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Replacing...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Replace File
+                    </>
+                  )}
                 </button>
               </div>
             </div>

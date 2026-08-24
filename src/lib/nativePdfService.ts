@@ -722,3 +722,30 @@ export async function saveAndOpenGeneratedPdf(pdfBlob: Blob, fileName: string): 
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 }
+
+/**
+ * Invalidates in-memory and local cache entries for a replaced note or path.
+ */
+export async function invalidateNoteCache(noteIdOrPath: string): Promise<void> {
+  if (!noteIdOrPath) return;
+  try {
+    // 1. Clear Web in-memory object URL cache
+    for (const [key, val] of webBlobCache.entries()) {
+      if (key.includes(noteIdOrPath) || (val.objectUrl && val.objectUrl.includes(noteIdOrPath))) {
+        try {
+          URL.revokeObjectURL(val.objectUrl);
+        } catch (_) {}
+        webBlobCache.delete(key);
+      }
+    }
+    // 2. Clear in-flight operations if any
+    for (const key of inFlightOperations.keys()) {
+      if (key.includes(noteIdOrPath)) {
+        inFlightOperations.delete(key);
+      }
+    }
+    console.log(`[NativePdfService] Invalidation completed for "${noteIdOrPath}"`);
+  } catch (e) {
+    console.warn(`[NativePdfService] Error during cache invalidation:`, e);
+  }
+}
