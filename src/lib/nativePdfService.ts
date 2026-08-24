@@ -191,24 +191,25 @@ async function streamFetchFromR2Storage(
 ): Promise<{ blob: Blob | null; notFound: boolean }> {
   const cleanPath = sanitizeStoragePath(storagePath, bucket);
 
-  // Target URLs: 1) Fresh Signed URL from R2, 2) Public R2 URL, 3) Internal /api/r2/download proxy endpoint
+  // Target URLs: 1) Same-Origin /api/r2/download proxy endpoint (100% reliable, no CORS issues, byte streaming)
+  // 2) Public R2 URL (if available), 3) Presigned URL
   const targetUrls: string[] = [];
 
-  try {
-    const signedUrl = await getR2SignedUrl({ bucket, key: cleanPath, expiresIn: 3600 });
-    if (signedUrl) targetUrls.push(signedUrl);
-  } catch (signErr) {
-    console.warn("[NotePipeline] Error obtaining signed URL:", signErr);
-  }
+  const proxyUrl = `/api/r2/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanPath)}`;
+  targetUrls.push(proxyUrl);
 
   const publicUrl = getR2PublicUrl(bucket, cleanPath);
   if (publicUrl && !targetUrls.includes(publicUrl)) {
     targetUrls.push(publicUrl);
   }
 
-  const proxyUrl = `/api/r2/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanPath)}`;
-  if (!targetUrls.includes(proxyUrl)) {
-    targetUrls.push(proxyUrl);
+  try {
+    const signedUrl = await getR2SignedUrl({ bucket, key: cleanPath, expiresIn: 3600 });
+    if (signedUrl && !targetUrls.includes(signedUrl)) {
+      targetUrls.push(signedUrl);
+    }
+  } catch (signErr) {
+    console.warn("[NotePipeline] Error obtaining signed URL:", signErr);
   }
 
   console.log(`[NotePipeline] 5. Requesting Cloudflare R2 Storage: bucket="${bucket}", path="${storagePath}"`);

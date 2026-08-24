@@ -940,7 +940,7 @@ export default function App() {
         const parsed = JSON.parse(pdfUrl);
         finalPdfUrl = parsed.storagePath || parsed.downloadUrl || pdfUrl;
         extraMetadata = {
-          storageProvider: "supabase",
+          storageProvider: "r2",
           bucket: parsed.bucket,
           storagePath: parsed.storagePath,
           fileName: parsed.fileName,

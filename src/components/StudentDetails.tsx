@@ -689,7 +689,7 @@ export default function StudentDetails({
           
           const newReport = {
             id: `report-${Date.now()}`,
-            storageProvider: "supabase" as const,
+            storageProvider: "r2" as const,
             bucket: metadata.bucket,
             storagePath: metadata.storagePath,
             fileName: metadata.fileName,

@@ -16,6 +16,18 @@ import {
 const app = express();
 const PORT = 3000;
 
+// Enable CORS for all API routes so direct browser fetches / downloads work smoothly
+app.use("/api", (req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, HEAD");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Range, Authorization, X-Requested-With");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range, Content-Type, ETag, Content-Disposition");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 // Enable raw binary upload parsing for R2 uploads and JSON for API requests
 app.use("/api/r2/upload", express.raw({ type: "*/*", limit: "100mb" }));
 app.use(express.json({ limit: "25mb" }));
@@ -180,6 +192,7 @@ app.post("/api/r2/signed-url", async (req, res) => {
     console.error("[Server R2] Error generating signed URL:", err);
     return res.status(500).json({
       error: err.message || "Failed to generate Cloudflare R2 signed URL.",
+      stack: process.env.NODE_ENV !== "production" ? err.stack : undefined,
     });
   }
 });
@@ -189,7 +202,7 @@ app.post("/api/r2/upload", async (req, res) => {
   try {
     const bucket = (req.query.bucket as string) || req.body?.bucket;
     const key = (req.query.key as string) || req.body?.key;
-    const contentType = (req.query.mimeType as string) || req.headers["content-type"] || "application/octet-stream";
+    let contentType = (req.query.mimeType as string) || req.headers["content-type"] || "application/octet-stream";
 
     if (!key) {
       return res.status(400).json({ error: "Missing required 'key' query parameter or body property." });
@@ -197,13 +210,34 @@ app.post("/api/r2/upload", async (req, res) => {
 
     let buffer: Buffer;
     if (Buffer.isBuffer(req.body)) {
-      buffer = req.body;
+      // Check if body is JSON with base64 payload
+      const reqContentType = req.headers["content-type"] || "";
+      if (reqContentType.includes("application/json")) {
+        try {
+          const parsed = JSON.parse(req.body.toString("utf8"));
+          if (parsed.base64) {
+            buffer = Buffer.from(parsed.base64, "base64");
+            if (parsed.mimeType) contentType = parsed.mimeType;
+          } else {
+            buffer = req.body;
+          }
+        } catch {
+          buffer = req.body;
+        }
+      } else {
+        buffer = req.body;
+      }
     } else if (req.body && typeof req.body === "object" && req.body.base64) {
       buffer = Buffer.from(req.body.base64, "base64");
+      if (req.body.mimeType) contentType = req.body.mimeType;
     } else if (typeof req.body === "string") {
       buffer = Buffer.from(req.body, "utf-8");
     } else {
       return res.status(400).json({ error: "No upload body data received." });
+    }
+
+    if (!buffer || buffer.length === 0) {
+      return res.status(400).json({ error: "Upload buffer is empty." });
     }
 
     console.log(`[Server R2] Uploading object key="${key}", size=${buffer.length} bytes, contentType="${contentType}"`);
@@ -216,23 +250,31 @@ app.post("/api/r2/upload", async (req, res) => {
     });
 
     const config = getR2ServerConfig();
+    const downloadUrl = `/api/r2/download?bucket=${encodeURIComponent(result.bucket)}&key=${encodeURIComponent(key)}`;
     const publicUrl = config.publicUrl
       ? `${config.publicUrl}/${key.replace(/^\/+/, "")}`
-      : `/api/r2/download?bucket=${encodeURIComponent(result.bucket)}&key=${encodeURIComponent(key)}`;
+      : downloadUrl;
 
     return res.json({
       success: true,
       bucket: result.bucket,
       key: result.key,
       etag: result.etag,
-      url: publicUrl,
+      url: downloadUrl,
+      publicUrl: publicUrl,
       size: buffer.length,
       mimeType: contentType,
     });
   } catch (err: any) {
-    console.error("[Server R2] Upload error:", err);
+    console.error("[Server R2] Upload error:", {
+      endpoint: "/api/r2/upload",
+      error: err.message,
+      stack: err.stack,
+    });
     return res.status(500).json({
       error: err.message || "Failed to upload file to Cloudflare R2.",
+      endpoint: "/api/r2/upload",
+      stack: err.stack,
     });
   }
 });
@@ -248,17 +290,38 @@ app.get("/api/r2/download", async (req, res) => {
     }
 
     const cleanKey = key.replace(/^\/+/, "");
-    const obj = await getObjectFromR2({ bucket, key: cleanKey });
+    const range = req.headers.range;
+
+    const obj = await getObjectFromR2({ bucket, key: cleanKey, range });
 
     if (!obj.body) {
       return res.status(404).send("File not found in Cloudflare R2.");
     }
 
-    res.setHeader("Content-Type", obj.contentType || "application/octet-stream");
+    let contentType = obj.contentType || "application/octet-stream";
+    if (contentType === "application/octet-stream" || !contentType) {
+      if (cleanKey.toLowerCase().endsWith(".pdf")) contentType = "application/pdf";
+      else if (cleanKey.toLowerCase().endsWith(".png")) contentType = "image/png";
+      else if (cleanKey.toLowerCase().endsWith(".jpg") || cleanKey.toLowerCase().endsWith(".jpeg")) contentType = "image/jpeg";
+      else if (cleanKey.toLowerCase().endsWith(".json")) contentType = "application/json";
+    }
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+
+    if (obj.etag) {
+      res.setHeader("ETag", obj.etag);
+    }
+
+    if (obj.contentRange) {
+      res.status(206);
+      res.setHeader("Content-Range", obj.contentRange);
+    }
+
     if (obj.contentLength) {
       res.setHeader("Content-Length", obj.contentLength);
     }
-    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
 
     if (req.query.download === "true" || req.query.filename) {
       const downloadFilename = (req.query.filename as string) || cleanKey.split("/").pop() || "download";
@@ -266,14 +329,13 @@ app.get("/api/r2/download", async (req, res) => {
     }
 
     // Stream the readable response
-    if (typeof (obj.body as any).pipe === "function") {
-      (obj.body as any).pipe(res);
-    } else {
-      const buffer = Buffer.from(await (obj.body as any).transformToByteArray());
-      res.send(buffer);
-    }
+    obj.body.pipe(res);
   } catch (err: any) {
-    console.error("[Server R2] Download error:", err);
+    console.error("[Server R2] Download error:", {
+      endpoint: "/api/r2/download",
+      error: err.message,
+      stack: err.stack,
+    });
     if (err.name === "NoSuchKey" || err.name === "NotFound" || err.$metadata?.httpStatusCode === 404) {
       return res.status(404).send("File not found in Cloudflare R2.");
     }
@@ -292,9 +354,15 @@ app.post("/api/r2/delete", async (req, res) => {
     const result = await deleteObjectFromR2({ bucket, key });
     return res.json(result);
   } catch (err: any) {
-    console.error("[Server R2] Delete error:", err);
+    console.error("[Server R2] Delete error:", {
+      endpoint: "/api/r2/delete",
+      error: err.message,
+      stack: err.stack,
+    });
     return res.status(500).json({
       error: err.message || "Failed to delete file from Cloudflare R2.",
+      endpoint: "/api/r2/delete",
+      stack: err.stack,
     });
   }
 });
@@ -310,9 +378,15 @@ app.post("/api/r2/delete-multiple", async (req, res) => {
     const result = await deleteObjectsFromR2({ bucket, keys });
     return res.json(result);
   } catch (err: any) {
-    console.error("[Server R2] Multiple delete error:", err);
+    console.error("[Server R2] Multiple delete error:", {
+      endpoint: "/api/r2/delete-multiple",
+      error: err.message,
+      stack: err.stack,
+    });
     return res.status(500).json({
       error: err.message || "Failed to delete files from Cloudflare R2.",
+      endpoint: "/api/r2/delete-multiple",
+      stack: err.stack,
     });
   }
 });
@@ -329,9 +403,15 @@ app.post("/api/r2/list", async (req, res) => {
     });
     return res.json(result);
   } catch (err: any) {
-    console.error("[Server R2] List error:", err);
+    console.error("[Server R2] List error:", {
+      endpoint: "/api/r2/list",
+      error: err.message,
+      stack: err.stack,
+    });
     return res.status(500).json({
       error: err.message || "Failed to list files from Cloudflare R2.",
+      endpoint: "/api/r2/list",
+      stack: err.stack,
     });
   }
 });
@@ -358,11 +438,11 @@ async function startServer() {
     }
 
     app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-      console.log(`Server listening on 0.0.0.0:${PORT}`);
+      console.log(`[Server] Production-ready Applet running on http://localhost:${PORT}`);
+      console.log(`[Server] Storage Backend: Cloudflare R2 (${getR2ServerConfig().bucket})`);
     });
   } catch (error) {
-    console.error("Failed to start server:", error);
+    console.error("[Server] Fatal bootstrap error:", error);
     process.exit(1);
   }
 }

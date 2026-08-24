@@ -23,7 +23,7 @@ import {
   Loader2
 } from "lucide-react";
 import { ClassNote, Student } from "../types";
-import { uploadFileToSupabase, deleteFileFromStorage } from "../lib/storageService";
+import { uploadFileToR2, deleteFileFromStorage } from "../lib/storageService";
 import { saveClassNoteDoc, deleteClassNoteDoc } from "../lib/firestoreService";
 import { groupClassNotesHierarchy, normalizeClassGrade, isClassGradeMatching, isSubjectMatching, generateUPSCStoragePath, inferGSPaperFromSubject } from "../utils/classNoteHelper";
 import { getFormattedTopicLabel, isFileNameRedundant } from "../utils/chapterNotesHelper";
@@ -471,7 +471,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         uploadPath = `class_notes/${normalizeClassGrade(finalClass).replace(/\s+/g, "_")}/${finalSubject.replace(/\s+/g, "_")}/${Date.now()}_${renamedFileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
       }
 
-      const uploadRes = await uploadFileToSupabase(
+      const uploadRes = await uploadFileToR2(
         "academy-connect-files",
         uploadPath,
         pdfFile,
@@ -823,10 +823,10 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
       }
 
       // 8. Uploading new file
-      console.log(`[ReplacePipeline] 8. Uploading new file to Supabase Storage: "${uploadPath}"`);
+      console.log(`[ReplacePipeline] 8. Uploading new file to Cloudflare R2 Storage: "${uploadPath}"`);
       let uploadRes: { storagePath: string; downloadUrl: string; bucket: string };
       try {
-        uploadRes = await uploadFileToSupabase(
+        uploadRes = await uploadFileToR2(
           bucket,
           uploadPath,
           replaceFile,

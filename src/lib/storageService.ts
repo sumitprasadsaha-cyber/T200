@@ -657,26 +657,10 @@ export async function getResolvedViewUrl(
     throw new Error("Invalid storage path specified.");
   }
 
-  // Obtain pre-signed URL from R2
-  try {
-    const signedUrl = await getR2SignedUrl({
-      bucket,
-      key: sanitizedPath,
-      expiresIn: 86400 * 7, // 7 days
-      operation: "getObject",
-    });
-
-    if (signedUrl) {
-      console.log(`[StorageService] Final URL used by viewer (R2 URL): ${signedUrl}`);
-      return signedUrl;
-    }
-  } catch (err: any) {
-    console.warn(`[StorageService] getR2SignedUrl warning (${err?.message || err}). Falling back to public URL.`);
-  }
-
-  const publicUrl = getR2PublicUrl(bucket, sanitizedPath);
-  console.log(`[StorageService] Final URL used by viewer (Public URL Fallback): ${publicUrl}`);
-  return publicUrl || cleanInput;
+  // Same-origin proxy URL gives reliable streaming, handles HTTP range, and bypasses CORS restrictions
+  const proxyUrl = `/api/r2/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(sanitizedPath)}`;
+  console.log(`[StorageService] Final URL used by viewer (R2 Proxy): ${proxyUrl}`);
+  return proxyUrl;
 }
 
 /**

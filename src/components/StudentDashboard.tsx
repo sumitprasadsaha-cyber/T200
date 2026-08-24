@@ -329,7 +329,7 @@ export async function generateSubjectPdfReport(student: Student, subject: string
         
         const newReport = {
           id: `report-${Date.now()}`,
-          storageProvider: "supabase" as const,
+          storageProvider: "r2" as const,
           bucket: metadata.bucket,
           storagePath: metadata.storagePath,
           fileName: metadata.fileName,

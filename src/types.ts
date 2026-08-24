@@ -68,8 +68,8 @@ export interface ChapterNote {
   allowedStudentIds?: string[];
   allowedClasses?: string[];
 
-  // Supabase storage metadata
-  storageProvider?: "supabase";
+  // Cloudflare R2 / Storage metadata
+  storageProvider?: "r2" | "supabase";
   bucket?: string;
   storagePath?: string;
   storage_path?: string;
@@ -97,7 +97,7 @@ export interface ChapterProgressData {
 
 export interface StudentReport {
   id: string;
-  storageProvider: "supabase";
+  storageProvider: "r2" | "supabase";
   bucket: string;
   storagePath: string;
   fileName: string;
