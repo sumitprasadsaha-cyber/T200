@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { uploadObjectToR2, deleteObjectsFromR2, listObjectsFromR2 } from "../src/lib/r2Server";
 
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "https://kffaehofciebfqczhfxm.supabase.co";
 const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_t9Xgetmt4736XUtCrAq8pQ_zcTJWzUg";
@@ -54,16 +55,16 @@ async function runCleanup() {
   // 4. Clean Storage buckets
   console.log("\n[Step 3] Cleaning practice test storage files in academy-connect-files...");
   try {
-    const emptyJsonBlob = new Blob([JSON.stringify({}, null, 2)], { type: "application/json" });
-    const emptyArrBlob = new Blob([JSON.stringify([], null, 2)], { type: "application/json" });
-    await supabase.storage.from("academy-connect-files").upload("practice_tests/test_bank.json", emptyJsonBlob, { upsert: true });
-    await supabase.storage.from("academy-connect-files").upload("practice_tests/test_attempts.json", emptyArrBlob, { upsert: true });
+    const emptyJsonBlob = Buffer.from(JSON.stringify({}, null, 2), "utf-8");
+    const emptyArrBlob = Buffer.from(JSON.stringify([], null, 2), "utf-8");
+    await uploadObjectToR2({ bucket: "academy-connect-files", key: "practice_tests/test_bank.json", body: emptyJsonBlob, contentType: "application/json" });
+    await uploadObjectToR2({ bucket: "academy-connect-files", key: "practice_tests/test_attempts.json", body: emptyArrBlob, contentType: "application/json" });
 
-    const { data: fileList } = await supabase.storage.from("academy-connect-files").list("practice_tests/student_attempts", { limit: 1000 });
+    const { objects: fileList } = await listObjectsFromR2({ bucket: "academy-connect-files", prefix: "practice_tests/student_attempts" });
     if (fileList && fileList.length > 0) {
-      const paths = fileList.map((f: any) => `practice_tests/student_attempts/${f.name}`);
-      await supabase.storage.from("academy-connect-files").remove(paths);
-      console.log(`Deleted ${paths.length} student attempt files from Storage.`);
+      const paths = fileList.map((f: any) => f.key);
+      await deleteObjectsFromR2({ bucket: "academy-connect-files", keys: paths });
+      console.log(`Deleted ${paths.length} student attempt files from R2 Storage.`);
     }
   } catch (stErr: any) {
     console.warn("Storage cleanup notice:", stErr.message);

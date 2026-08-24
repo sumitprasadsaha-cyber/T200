@@ -13,6 +13,8 @@
     "test:pdf-storage-flow": "tsx scripts/testPdfStorageFlow.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1116.0",
+    "@aws-sdk/s3-request-presigner": "^3.1116.0",
     "@capacitor-community/file-opener": "^8.0.1",
     "@capacitor/android": "^8.4.2",
     "@capacitor/app": "^8.1.1",

@@ -1,6 +1,7 @@
 import { supabase } from "./supabaseClient";
 import { ParsedAssessmentQuestion, TopicPracticeTest, TestAttemptRecord } from "../types";
 import { getResolvedViewUrl } from "./storageService";
+import { uploadToR2, downloadFromR2, getR2BucketName } from "./r2Client";
 import { doc, setDoc, onSnapshot } from "firebase/firestore";
 import { getFirebaseDb } from "./firebase";
 import { normalizeQuestionOptions } from "../utils/assessmentParser";
@@ -466,7 +467,7 @@ export function buildQuestionId(
 // LOCAL CACHE & STORAGE SYNC HELPERS
 // ----------------------------------------------------
 
-const PRACTICE_TESTS_BUCKET = "academy-connect-files";
+const PRACTICE_TESTS_BUCKET = getR2BucketName();
 const PRACTICE_TESTS_FILE_PATH = "practice_tests/test_bank.json";
 const PRACTICE_TEST_ATTEMPTS_FILE_PATH = "practice_tests/test_attempts.json";
 
@@ -569,9 +570,12 @@ export async function purgeAllPracticeTestsData(): Promise<void> {
   try {
     const jsonString = JSON.stringify({}, null, 2);
     const blob = new Blob([jsonString], { type: "application/json" });
-    await supabase.storage
-      .from(PRACTICE_TESTS_BUCKET)
-      .upload(PRACTICE_TESTS_FILE_PATH, blob, { upsert: true });
+    await uploadToR2({
+      bucket: PRACTICE_TESTS_BUCKET,
+      key: PRACTICE_TESTS_FILE_PATH,
+      file: blob,
+      mimeType: "application/json",
+    });
   } catch (err) {
     console.warn("[PracticeTestService] Storage purge warning:", err);
   }
@@ -594,13 +598,12 @@ export async function syncTestBankToSupabaseStorage(bank: Record<string, TopicPr
   try {
     const jsonString = JSON.stringify(bank, null, 2);
     const blob = new Blob([jsonString], { type: "application/json" });
-    const { error } = await supabase.storage
-      .from(PRACTICE_TESTS_BUCKET)
-      .upload(PRACTICE_TESTS_FILE_PATH, blob, { upsert: true });
-    if (error) {
-      console.warn("[PracticeTestService] Storage sync warning:", error.message || error);
-      return false;
-    }
+    await uploadToR2({
+      bucket: PRACTICE_TESTS_BUCKET,
+      key: PRACTICE_TESTS_FILE_PATH,
+      file: blob,
+      mimeType: "application/json",
+    });
     return true;
   } catch (err) {
     console.warn("[PracticeTestService] Storage sync exception:", err);
@@ -610,11 +613,12 @@ export async function syncTestBankToSupabaseStorage(bank: Record<string, TopicPr
 
 export async function fetchTestBankFromSupabaseStorage(): Promise<Record<string, TopicPracticeTest> | null> {
   try {
-    const { data, error } = await supabase.storage
-      .from(PRACTICE_TESTS_BUCKET)
-      .download(PRACTICE_TESTS_FILE_PATH);
-    if (!error && data) {
-      const text = await data.text();
+    const { blob } = await downloadFromR2({
+      bucket: PRACTICE_TESTS_BUCKET,
+      key: PRACTICE_TESTS_FILE_PATH,
+    });
+    if (blob) {
+      const text = await blob.text();
       if (text) {
         const parsed = JSON.parse(text);
         if (parsed && typeof parsed === "object") {
@@ -632,13 +636,12 @@ export async function syncTestAttemptsToSupabaseStorage(attempts: TestAttemptRec
   try {
     const jsonString = JSON.stringify(attempts, null, 2);
     const blob = new Blob([jsonString], { type: "application/json" });
-    const { error } = await supabase.storage
-      .from(PRACTICE_TESTS_BUCKET)
-      .upload(PRACTICE_TEST_ATTEMPTS_FILE_PATH, blob, { upsert: true });
-    if (error) {
-      console.warn("[PracticeTestService] Storage attempts sync warning:", error.message || error);
-      return false;
-    }
+    await uploadToR2({
+      bucket: PRACTICE_TESTS_BUCKET,
+      key: PRACTICE_TEST_ATTEMPTS_FILE_PATH,
+      file: blob,
+      mimeType: "application/json",
+    });
     return true;
   } catch (err) {
     console.warn("[PracticeTestService] Storage attempts sync exception:", err);
@@ -648,11 +651,12 @@ export async function syncTestAttemptsToSupabaseStorage(attempts: TestAttemptRec
 
 export async function fetchTestAttemptsFromSupabaseStorage(): Promise<TestAttemptRecord[] | null> {
   try {
-    const { data, error } = await supabase.storage
-      .from(PRACTICE_TESTS_BUCKET)
-      .download(PRACTICE_TEST_ATTEMPTS_FILE_PATH);
-    if (!error && data) {
-      const text = await data.text();
+    const { blob } = await downloadFromR2({
+      bucket: PRACTICE_TESTS_BUCKET,
+      key: PRACTICE_TEST_ATTEMPTS_FILE_PATH,
+    });
+    if (blob) {
+      const text = await blob.text();
       if (text) {
         const parsed = JSON.parse(text);
         if (Array.isArray(parsed)) {

@@ -2,7 +2,7 @@ import { Filesystem, Directory } from "@capacitor/filesystem";
 import { FileOpener } from "@capacitor-community/file-opener";
 import { Capacitor } from "@capacitor/core";
 import { getBucketName, sanitizeStoragePath } from "./storageService";
-import { supabase, getSupabaseConfig } from "./supabaseClient";
+import { getR2SignedUrl, getR2PublicUrl, downloadFromR2 } from "./r2Client";
 import { dataUrlToBlob } from "../utils/pdfUtils";
 
 export type NoteViewerState = "idle" | "downloading" | "opening" | "opened" | "error";
@@ -179,26 +179,39 @@ function encodeStoragePath(rawPath: string): string {
 }
 
 /**
- * Fetches file directly from Supabase Storage with strict 10s first-byte timeout,
+ * Fetches file directly from Cloudflare R2 Storage with strict 10s first-byte timeout,
  * real byte streaming progress, and 404 detection.
  */
-async function streamFetchFromSupabaseStorage(
+async function streamFetchFromR2Storage(
   bucket: string,
   storagePath: string,
   noteId?: string,
   fileName?: string,
   onProgress?: (percent: number | null, label: string) => void
 ): Promise<{ blob: Blob | null; notFound: boolean }> {
-  const { url: supabaseUrl, anonKey } = getSupabaseConfig();
-  const encodedPath = encodeStoragePath(storagePath);
+  const cleanPath = sanitizeStoragePath(storagePath, bucket);
 
-  // Target URLs: Authenticated REST endpoint first, then public endpoint
-  const targetUrls = [
-    `${supabaseUrl}/storage/v1/object/authenticated/${bucket}/${encodedPath}`,
-    `${supabaseUrl}/storage/v1/object/public/${bucket}/${encodedPath}`
-  ];
+  // Target URLs: 1) Fresh Signed URL from R2, 2) Public R2 URL, 3) Internal /api/r2/download proxy endpoint
+  const targetUrls: string[] = [];
 
-  console.log(`[NotePipeline] 5. Requesting Supabase Storage: bucket="${bucket}", path="${storagePath}"`);
+  try {
+    const signedUrl = await getR2SignedUrl({ bucket, key: cleanPath, expiresIn: 3600 });
+    if (signedUrl) targetUrls.push(signedUrl);
+  } catch (signErr) {
+    console.warn("[NotePipeline] Error obtaining signed URL:", signErr);
+  }
+
+  const publicUrl = getR2PublicUrl(bucket, cleanPath);
+  if (publicUrl && !targetUrls.includes(publicUrl)) {
+    targetUrls.push(publicUrl);
+  }
+
+  const proxyUrl = `/api/r2/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanPath)}`;
+  if (!targetUrls.includes(proxyUrl)) {
+    targetUrls.push(proxyUrl);
+  }
+
+  console.log(`[NotePipeline] 5. Requesting Cloudflare R2 Storage: bucket="${bucket}", path="${storagePath}"`);
 
   for (const url of targetUrls) {
     let controller: AbortController | null = null;
@@ -210,7 +223,7 @@ async function streamFetchFromSupabaseStorage(
 
     try {
       controller = new AbortController();
-      console.log(`[NotePipeline] 6. Download request started: URL="${url}"`);
+      console.log(`[NotePipeline] 6. Download request started: URL="${url.substring(0, 120)}"`);
 
       // Strict 10-second first byte timeout
       firstByteTimer = setTimeout(() => {
@@ -241,19 +254,13 @@ async function streamFetchFromSupabaseStorage(
         }
       }, 30000);
 
-      const headers: Record<string, string> = {};
-      if (anonKey) {
-        headers["apikey"] = anonKey;
-        headers["Authorization"] = `Bearer ${anonKey}`;
-      }
-
-      const response = await fetch(url, { signal: controller.signal, headers });
+      const response = await fetch(url, { signal: controller.signal });
 
       // Handle 404 / 400 Object Not Found
       if (response.status === 404 || response.status === 400) {
         clearTimeout(firstByteTimer);
         clearTimeout(totalTimeoutTimer);
-        console.error(`[NotePipeline] HTTP ${response.status} Object Not Found from Supabase Storage:`, {
+        console.error(`[NotePipeline] HTTP ${response.status} Object Not Found from Cloudflare R2:`, {
           noteId,
           fileName,
           bucket,
@@ -266,7 +273,7 @@ async function streamFetchFromSupabaseStorage(
       if (!response.ok) {
         clearTimeout(firstByteTimer);
         clearTimeout(totalTimeoutTimer);
-        console.warn(`[NotePipeline] Supabase Storage HTTP error ${response.status}:`, {
+        console.warn(`[NotePipeline] Cloudflare R2 Storage HTTP error ${response.status}:`, {
           noteId,
           fileName,
           bucket,
@@ -339,36 +346,17 @@ async function streamFetchFromSupabaseStorage(
     }
   }
 
-  // Final fallback: Use Supabase JS Storage SDK download() with 10s timeout
+  // Final fallback: Use downloadFromR2 client helper
   try {
-    console.log(`[NotePipeline] Trying Supabase JS SDK download for bucket="${bucket}", path="${storagePath}"`);
-    const sdkPromise = supabase.storage.from(bucket).download(storagePath);
-    const sdkRes = await withTimeout<{ data: Blob | null; error: any }>(
-      sdkPromise,
-      10000,
-      "Supabase SDK download timeout (10s limit exceeded)"
-    );
-
-    if (sdkRes.error) {
-      const errMsg = (sdkRes.error.message || "").toLowerCase();
-      if (errMsg.includes("not found") || sdkRes.error.statusCode === "404" || sdkRes.error.status === 404) {
-        console.error(`[NotePipeline] Supabase SDK: Object Not Found:`, {
-          noteId,
-          fileName,
-          bucket,
-          storage_path: storagePath,
-          error: sdkRes.error
-        });
-        return { blob: null, notFound: true };
-      }
-      console.warn("[NotePipeline] Supabase SDK download error:", sdkRes.error);
-    } else if (sdkRes.data && sdkRes.data.size > 0) {
-      console.log(`[NotePipeline] 9. Download complete (via SDK): ${sdkRes.data.size} bytes received`);
+    console.log(`[NotePipeline] Trying direct R2 download helper for bucket="${bucket}", path="${storagePath}"`);
+    const directRes = await downloadFromR2({ bucket, key: cleanPath });
+    if (directRes.blob && directRes.blob.size > 0) {
+      console.log(`[NotePipeline] 9. Download complete (via R2 client): ${directRes.blob.size} bytes received`);
       if (onProgress) onProgress(100, "Downloading…");
-      return { blob: sdkRes.data, notFound: false };
+      return { blob: directRes.blob, notFound: false };
     }
-  } catch (sdkErr: any) {
-    console.warn("[NotePipeline] Supabase SDK download exception:", sdkErr?.message || sdkErr);
+  } catch (r2Err: any) {
+    console.warn("[NotePipeline] Direct R2 download exception:", r2Err?.message || r2Err);
   }
 
   return { blob: null, notFound: false };
@@ -549,21 +537,21 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
       }
     }
 
-    console.log("[NotePipeline] CACHE_MISS - fetching directly from Supabase Storage:", {
+    console.log("[NotePipeline] CACHE_MISS - fetching directly from Cloudflare R2 Storage:", {
       noteId,
       bucket: activeBucket,
       storagePath: activePath,
       cacheFileName
     });
 
-    // Step 2: Fetch directly from Supabase Storage with real byte progress
+    // Step 2: Fetch directly from Cloudflare R2 Storage with real byte progress
     updateProgress(null, "Connecting…");
 
     let pdfBlob: Blob | null = null;
     let isNotFound = false;
 
     if (activePath && !url.startsWith("data:") && !url.startsWith("blob:")) {
-      const streamRes = await streamFetchFromSupabaseStorage(
+      const streamRes = await streamFetchFromR2Storage(
         activeBucket,
         activePath,
         noteId,
@@ -576,7 +564,7 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
 
     // Stop immediately if object not found (404)
     if (isNotFound) {
-      console.error(`[NotePipeline] Aborting: Note object not found in Supabase Storage.`, {
+      console.error(`[NotePipeline] Aborting: Note object not found in Cloudflare R2 Storage.`, {
         noteId,
         fileName,
         bucket: activeBucket,

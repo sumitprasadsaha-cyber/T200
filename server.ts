@@ -2,11 +2,23 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import {
+  uploadObjectToR2,
+  getObjectFromR2,
+  generateR2SignedUrl,
+  deleteObjectFromR2,
+  deleteObjectsFromR2,
+  listObjectsFromR2,
+  headObjectFromR2,
+  getR2ServerConfig,
+} from "./src/lib/r2Server";
 
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: "10mb" }));
+// Enable raw binary upload parsing for R2 uploads and JSON for API requests
+app.use("/api/r2/upload", express.raw({ type: "*/*", limit: "100mb" }));
+app.use(express.json({ limit: "25mb" }));
 
 // Lazy initializer for Gemini API client
 let aiClient: GoogleGenAI | null = null;
@@ -125,6 +137,201 @@ app.post("/api/ai/chat", async (req, res) => {
     console.error("Error in AI Chat endpoint:", err);
     return res.status(500).json({
       error: err.message || "AI Chat failed. Please check network or API setup.",
+    });
+  }
+});
+
+// ========================================================
+// CLOUDFLARE R2 STORAGE API ROUTES
+// ========================================================
+
+// 1. Health check & configuration status
+app.get("/api/r2/health", (req, res) => {
+  const config = getR2ServerConfig();
+  const configured = Boolean(config.accessKeyId && config.secretAccessKey && (config.accountId || config.endpoint));
+  return res.json({
+    status: "ok",
+    storageBackend: "Cloudflare R2",
+    configured,
+    bucket: config.bucket,
+    hasEndpoint: Boolean(config.endpoint),
+    hasPublicUrl: Boolean(config.publicUrl),
+  });
+});
+
+// 2. Generate Pre-signed URL (GET or PUT)
+app.post("/api/r2/signed-url", async (req, res) => {
+  try {
+    const { bucket, key, expiresIn, operation, contentType } = req.body;
+    if (!key) {
+      return res.status(400).json({ error: "Missing required 'key' parameter." });
+    }
+
+    const signedUrl = await generateR2SignedUrl({
+      bucket,
+      key,
+      expiresIn: Number(expiresIn) || 3600,
+      operation: operation === "putObject" ? "putObject" : "getObject",
+      contentType,
+    });
+
+    return res.json({ success: true, signedUrl });
+  } catch (err: any) {
+    console.error("[Server R2] Error generating signed URL:", err);
+    return res.status(500).json({
+      error: err.message || "Failed to generate Cloudflare R2 signed URL.",
+    });
+  }
+});
+
+// 3. Upload File directly via Backend Proxy
+app.post("/api/r2/upload", async (req, res) => {
+  try {
+    const bucket = (req.query.bucket as string) || req.body?.bucket;
+    const key = (req.query.key as string) || req.body?.key;
+    const contentType = (req.query.mimeType as string) || req.headers["content-type"] || "application/octet-stream";
+
+    if (!key) {
+      return res.status(400).json({ error: "Missing required 'key' query parameter or body property." });
+    }
+
+    let buffer: Buffer;
+    if (Buffer.isBuffer(req.body)) {
+      buffer = req.body;
+    } else if (req.body && typeof req.body === "object" && req.body.base64) {
+      buffer = Buffer.from(req.body.base64, "base64");
+    } else if (typeof req.body === "string") {
+      buffer = Buffer.from(req.body, "utf-8");
+    } else {
+      return res.status(400).json({ error: "No upload body data received." });
+    }
+
+    console.log(`[Server R2] Uploading object key="${key}", size=${buffer.length} bytes, contentType="${contentType}"`);
+
+    const result = await uploadObjectToR2({
+      bucket,
+      key,
+      body: buffer,
+      contentType,
+    });
+
+    const config = getR2ServerConfig();
+    const publicUrl = config.publicUrl
+      ? `${config.publicUrl}/${key.replace(/^\/+/, "")}`
+      : `/api/r2/download?bucket=${encodeURIComponent(result.bucket)}&key=${encodeURIComponent(key)}`;
+
+    return res.json({
+      success: true,
+      bucket: result.bucket,
+      key: result.key,
+      etag: result.etag,
+      url: publicUrl,
+      size: buffer.length,
+      mimeType: contentType,
+    });
+  } catch (err: any) {
+    console.error("[Server R2] Upload error:", err);
+    return res.status(500).json({
+      error: err.message || "Failed to upload file to Cloudflare R2.",
+    });
+  }
+});
+
+// 4. Download / Stream File from R2
+app.get("/api/r2/download", async (req, res) => {
+  try {
+    const bucket = req.query.bucket as string | undefined;
+    const key = req.query.key as string | undefined;
+
+    if (!key) {
+      return res.status(400).send("Missing required 'key' query parameter.");
+    }
+
+    const cleanKey = key.replace(/^\/+/, "");
+    const obj = await getObjectFromR2({ bucket, key: cleanKey });
+
+    if (!obj.body) {
+      return res.status(404).send("File not found in Cloudflare R2.");
+    }
+
+    res.setHeader("Content-Type", obj.contentType || "application/octet-stream");
+    if (obj.contentLength) {
+      res.setHeader("Content-Length", obj.contentLength);
+    }
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+
+    if (req.query.download === "true" || req.query.filename) {
+      const downloadFilename = (req.query.filename as string) || cleanKey.split("/").pop() || "download";
+      res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(downloadFilename)}"`);
+    }
+
+    // Stream the readable response
+    if (typeof (obj.body as any).pipe === "function") {
+      (obj.body as any).pipe(res);
+    } else {
+      const buffer = Buffer.from(await (obj.body as any).transformToByteArray());
+      res.send(buffer);
+    }
+  } catch (err: any) {
+    console.error("[Server R2] Download error:", err);
+    if (err.name === "NoSuchKey" || err.name === "NotFound" || err.$metadata?.httpStatusCode === 404) {
+      return res.status(404).send("File not found in Cloudflare R2.");
+    }
+    return res.status(500).send(`Cloudflare R2 Download Error: ${err.message || err}`);
+  }
+});
+
+// 5. Delete single object
+app.post("/api/r2/delete", async (req, res) => {
+  try {
+    const { bucket, key } = req.body;
+    if (!key) {
+      return res.status(400).json({ error: "Missing required 'key' parameter." });
+    }
+
+    const result = await deleteObjectFromR2({ bucket, key });
+    return res.json(result);
+  } catch (err: any) {
+    console.error("[Server R2] Delete error:", err);
+    return res.status(500).json({
+      error: err.message || "Failed to delete file from Cloudflare R2.",
+    });
+  }
+});
+
+// 6. Delete multiple objects
+app.post("/api/r2/delete-multiple", async (req, res) => {
+  try {
+    const { bucket, keys } = req.body;
+    if (!keys || !Array.isArray(keys) || keys.length === 0) {
+      return res.status(400).json({ error: "Missing or invalid 'keys' array parameter." });
+    }
+
+    const result = await deleteObjectsFromR2({ bucket, keys });
+    return res.json(result);
+  } catch (err: any) {
+    console.error("[Server R2] Multiple delete error:", err);
+    return res.status(500).json({
+      error: err.message || "Failed to delete files from Cloudflare R2.",
+    });
+  }
+});
+
+// 7. List objects by prefix
+app.post("/api/r2/list", async (req, res) => {
+  try {
+    const { bucket, prefix, limit, continuationToken } = req.body;
+    const result = await listObjectsFromR2({
+      bucket,
+      prefix,
+      maxKeys: Number(limit) || 1000,
+      continuationToken,
+    });
+    return res.json(result);
+  } catch (err: any) {
+    console.error("[Server R2] List error:", err);
+    return res.status(500).json({
+      error: err.message || "Failed to list files from Cloudflare R2.",
     });
   }
 });

@@ -1,4 +1,23 @@
-import { supabase } from "./supabaseClient";
+/**
+ * Unified Cloudflare R2 Storage Service
+ * 
+ * Production-ready storage service replacing Supabase Storage with Cloudflare R2.
+ * Preserves all existing method signatures, path conventions, UPSC hierarchy structures,
+ * progress callbacks, and viewer resolution logic.
+ */
+
+import {
+  getR2BucketName,
+  getR2PublicUrl,
+  getR2SignedUrl,
+  uploadToR2,
+  downloadFromR2,
+  deleteFromR2,
+  deleteMultipleFromR2,
+  listFromR2,
+  type R2UploadResult,
+  type R2ObjectInfo,
+} from "./r2Client";
 import { safeLocalStorageSetItem } from "./safeStorage";
 
 const PDF_MIME_TYPE = "application/pdf";
@@ -51,15 +70,15 @@ function validatePdfBlob(blob: Blob | null): Blob {
   }
 
   const mimeType = (blob.type || "").toLowerCase();
-  if (mimeType && mimeType !== PDF_MIME_TYPE) {
+  if (mimeType && mimeType !== PDF_MIME_TYPE && !mimeType.includes("octet-stream")) {
     throw new Error(`Invalid PDF MIME type: ${mimeType}`);
   }
 
   return blob;
 }
 
-export interface SupabaseUploadMetadata {
-  storageProvider: "supabase";
+export interface R2UploadMetadata {
+  storageProvider: "r2" | "supabase";
   bucket: string;
   storagePath: string;
   fileName: string;
@@ -70,26 +89,18 @@ export interface SupabaseUploadMetadata {
   downloadUrl: string;
 }
 
+// Backward compatibility alias
+export type SupabaseUploadMetadata = R2UploadMetadata;
+
 /**
- * Returns the configured Supabase Storage bucket name.
+ * Returns the configured Cloudflare R2 bucket name.
  */
 export function getBucketName(customBucket?: string): string {
-  if (customBucket && typeof customBucket === "string" && customBucket.trim().length > 0) {
-    const cleanCustom = customBucket.trim().replace(/^\/+|\/+$/g, "");
-    if (
-      cleanCustom.length > 0 &&
-      cleanCustom !== "academy-connect-500d1.firebasestorage.app" &&
-      !cleanCustom.includes("firebasestorage.app")
-    ) {
-      return cleanCustom;
-    }
-  }
-  const envBucket = getRuntimeEnvValue("VITE_SUPABASE_BUCKET", "academy-connect-files");
-  return envBucket.trim().replace(/^\/+|\/+$/g, "");
+  return getR2BucketName(customBucket);
 }
 
 /**
- * Sanitizes and normalizes raw storage paths or URLs into a clean, relative Supabase storage path.
+ * Sanitizes and normalizes raw storage paths or URLs into a clean, relative Cloudflare R2 storage key.
  * Ensures:
  * - No leading slashes
  * - No double slashes
@@ -128,7 +139,7 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
   cleaned = cleaned.replace(/\\/g, "/");
   cleaned = cleaned.replace(/^["']|["']$/g, "");
 
-  // 2. Safely decode URI encoded characters if present (handles %20, %2F, double encoded %2520, etc.)
+  // 2. Safely decode URI encoded characters if present
   if (cleaned.includes("%")) {
     try {
       let decoded = decodeURIComponent(cleaned);
@@ -149,12 +160,12 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
     cleaned = cleaned.split("#")[0];
   }
 
-  // 4. Handle gs:// protocol URLs
-  if (cleaned.startsWith("gs://")) {
-    const gsWithoutPrefix = cleaned.substring(5);
-    const slashIdx = gsWithoutPrefix.indexOf("/");
+  // 4. Handle gs:// or s3:// protocol URLs
+  if (cleaned.startsWith("gs://") || cleaned.startsWith("s3://")) {
+    const withoutPrefix = cleaned.substring(5);
+    const slashIdx = withoutPrefix.indexOf("/");
     if (slashIdx !== -1) {
-      cleaned = gsWithoutPrefix.substring(slashIdx + 1);
+      cleaned = withoutPrefix.substring(slashIdx + 1);
     } else {
       cleaned = "";
     }
@@ -165,18 +176,35 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
     try {
       const urlObj = new URL(cleaned);
       const pathname = urlObj.pathname;
-      const storageMatch = pathname.match(
+      
+      // R2 download endpoint pattern
+      const r2ApiMatch = pathname.match(/\/api\/r2\/download/);
+      if (r2ApiMatch && urlObj.searchParams.get("key")) {
+        return sanitizeStoragePath(urlObj.searchParams.get("key")!);
+      }
+
+      // Supabase storage match (for backward compatibility during migration)
+      const supabaseMatch = pathname.match(
         /\/storage\/v1\/object\/(?:public|sign|authenticated)\/[^\/]+\/(.+)/
       );
-      if (storageMatch && storageMatch[1]) {
+      if (supabaseMatch && supabaseMatch[1]) {
         try {
-          cleaned = decodeURIComponent(storageMatch[1]);
+          cleaned = decodeURIComponent(supabaseMatch[1]);
         } catch {
-          cleaned = storageMatch[1];
+          cleaned = supabaseMatch[1];
         }
       } else {
-        // External non-Supabase HTTP/HTTPS URL
-        return "";
+        // Cloudflare R2 direct public/custom domain URL
+        const pathSegments = pathname.replace(/^\/+/, "").split("/");
+        const activeBucket = getBucketName(bucketName);
+        if (pathSegments[0] === activeBucket) {
+          pathSegments.shift();
+        }
+        if (pathSegments.length > 0) {
+          cleaned = pathSegments.join("/");
+        } else {
+          return "";
+        }
       }
     } catch (e) {
       // Ignore URL parsing errors
@@ -257,75 +285,27 @@ export function buildQuestionImageStoragePath(topicOrTestId: string, originalFil
 }
 
 /**
- * Uploads a file or blob to Supabase Storage with real upload progress tracking via XMLHttpRequest.
- */
-async function uploadWithXhrProgress(
-  url: string,
-  anonKey: string,
-  file: File | Blob,
-  mimeType: string,
-  onProgress?: (percent: number) => void
-): Promise<boolean> {
-  if (typeof XMLHttpRequest === "undefined") return false;
-  return new Promise((resolve) => {
-    try {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", url, true);
-      xhr.setRequestHeader("apikey", anonKey);
-      xhr.setRequestHeader("Authorization", `Bearer ${anonKey}`);
-      xhr.setRequestHeader("Content-Type", mimeType);
-      xhr.setRequestHeader("x-upsert", "true");
-
-      if (xhr.upload && onProgress) {
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable && event.total > 0) {
-            const percent = Math.min(100, Math.max(0, Math.round((event.loaded / event.total) * 100)));
-            onProgress(percent);
-          }
-        };
-      }
-
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          if (onProgress) onProgress(100);
-          resolve(true);
-        } else {
-          console.warn(`[StorageService] XHR upload status: ${xhr.status}`);
-          resolve(false);
-        }
-      };
-
-      xhr.onerror = () => resolve(false);
-      xhr.ontimeout = () => resolve(false);
-      xhr.send(file);
-    } catch {
-      resolve(false);
-    }
-  });
-}
-
-/**
- * Uploads a file or blob to Supabase Storage.
- * Logs final bucket name, upload path, and storage responses.
+ * Uploads a file or blob to Cloudflare R2 Storage.
+ * Logs bucket name, upload key, and storage responses.
  * Throws exact error message if upload fails.
  */
-export async function uploadFileToSupabase(
+export async function uploadFileToR2(
   bucketInput: string,
   rawPath: string,
   file: File | Blob,
   fileName: string,
   uploadedBy: string = "System",
   onProgress?: (percent: number) => void
-): Promise<SupabaseUploadMetadata> {
+): Promise<R2UploadMetadata> {
   const bucket = getBucketName(bucketInput);
   const sanitizedPath = normalizeUploadedStoragePath(bucket, rawPath);
   const isPdf = fileName.toLowerCase().endsWith(".pdf");
   const isImage = fileName.toLowerCase().match(/\.(png|jpg|jpeg|webp|gif|svg)$/i) || (!isPdf && (file.type || "").startsWith("image"));
   const mimeType = file.type || (isPdf ? PDF_MIME_TYPE : isImage ? "image/jpeg" : "application/octet-stream");
 
-  console.log(`[StorageService] Uploading file to Supabase Storage:`);
+  console.log(`[StorageService] Uploading file to Cloudflare R2:`);
   console.log(`  - Bucket Name: "${bucket}"`);
-  console.log(`  - Upload Path: "${sanitizedPath}"`);
+  console.log(`  - Storage Path: "${sanitizedPath}"`);
   console.log(`  - File Name: "${fileName}"`);
   console.log(`  - Size: ${file.size} bytes`);
   console.log(`  - MIME Type: "${mimeType}"`);
@@ -333,56 +313,29 @@ export async function uploadFileToSupabase(
   if (!sanitizedPath) {
     const pathError = "Invalid storage path constructed (path is empty).";
     console.error(`[StorageService] Upload Aborted: ${pathError}`);
-    throw new Error(`Supabase Storage Error: ${pathError}`);
+    throw new Error(`Cloudflare R2 Storage Error: ${pathError}`);
   }
 
-  const rawSupabaseUrl = getRuntimeEnvValue("VITE_SUPABASE_URL") || "https://kffaehofciebfqczhfxm.supabase.co";
-  const supabaseAnonKey = getRuntimeEnvValue("VITE_SUPABASE_ANON_KEY") || "sb_publishable_t9Xgetmt4736XUtCrAq8pQ_zcTJWzUg";
-  const cleanSupabaseUrl = rawSupabaseUrl.trim().replace(/\/rest\/v1\/?$/i, "").replace(/\/+$/, "");
-
-  let uploadSucceeded = false;
-  if (onProgress && cleanSupabaseUrl && !cleanSupabaseUrl.includes("mock-supabase.local")) {
-    const directUploadUrl = `${cleanSupabaseUrl}/storage/v1/object/${bucket}/${sanitizedPath}`;
-    uploadSucceeded = await uploadWithXhrProgress(directUploadUrl, supabaseAnonKey, file, mimeType, onProgress);
-  }
-
-  if (!uploadSucceeded) {
-    const { data, error } = await supabase.storage
-      .from(bucket)
-      .upload(sanitizedPath, file, {
-        contentType: mimeType,
-        upsert: true
-      });
-
-    console.log("[StorageService] Supabase upload response object:", { data, error });
-
-    if (error) {
-      const rawErrorMsg = error.message || JSON.stringify(error);
-      console.error("[StorageService] SUPABASE UPLOAD FAILURE DETAILS:", {
-        bucket,
-        storagePath: sanitizedPath,
-        fileName,
-        error
-      });
-      throw new Error(`Supabase Storage Error: ${rawErrorMsg}`);
-    }
-  }
-
-  if (onProgress) onProgress(100);
+  const uploadResult = await uploadToR2({
+    bucket,
+    key: sanitizedPath,
+    file,
+    mimeType,
+    onProgress,
+  });
 
   const successPath = sanitizedPath;
+  let downloadUrl = uploadResult.url;
 
-  let downloadUrl = "";
   try {
-    downloadUrl = await getResolvedViewUrl(bucket, successPath);
+    const resolved = await getResolvedViewUrl(bucket, successPath);
+    if (resolved) downloadUrl = resolved;
   } catch (urlError) {
-    console.warn("[StorageService] Failed to generate resolved URL post-upload, using fallback:", urlError);
-    const { data: publicData } = supabase.storage.from(bucket).getPublicUrl(successPath);
-    downloadUrl = publicData?.publicUrl || successPath;
+    console.warn("[StorageService] Failed to generate resolved URL post-upload, using public URL:", urlError);
   }
 
-  const metadata: SupabaseUploadMetadata = {
-    storageProvider: "supabase",
+  const metadata: R2UploadMetadata = {
+    storageProvider: "r2",
     bucket,
     storagePath: successPath,
     fileName,
@@ -393,12 +346,15 @@ export async function uploadFileToSupabase(
     downloadUrl,
   };
 
-  console.log(`[StorageService] Upload complete. Metadata:`, metadata);
+  console.log(`[StorageService] Cloudflare R2 upload complete. Metadata:`, metadata);
   return metadata;
 }
 
+// Backward compatible alias
+export const uploadFileToSupabase = uploadFileToR2;
+
 /**
- * Uploads a PDF note to Supabase Storage.
+ * Uploads a PDF note to Cloudflare R2.
  */
 export async function uploadPdfToStorage(
   studentId: string,
@@ -434,9 +390,9 @@ export async function uploadPdfToStorage(
   const bucket = getBucketName();
   const storagePath = buildNoteStoragePath(studentId, fileName);
 
-  console.log(`[StorageService] Initiating PDF note upload. Bucket: "${bucket}", Path: "${storagePath}"`);
+  console.log(`[StorageService] Initiating PDF note upload to R2. Bucket: "${bucket}", Path: "${storagePath}"`);
 
-  const metadata = await uploadFileToSupabase(
+  const metadata = await uploadFileToR2(
     bucket,
     storagePath,
     file,
@@ -452,22 +408,22 @@ export async function uploadPdfToStorage(
 }
 
 /**
- * Uploads a profile photo to Supabase Storage.
+ * Uploads a profile photo to Cloudflare R2.
  */
 export async function uploadProfilePhoto(
   userId: string,
   dataUrl: string,
   originalFileName: string = "profile.png"
-): Promise<SupabaseUploadMetadata> {
+): Promise<R2UploadMetadata> {
   const response = await fetch(dataUrl);
   const blob = await response.blob();
 
   const bucket = getBucketName();
   const storagePath = buildProfilePhotoStoragePath(userId, originalFileName);
 
-  console.log(`[StorageService] Uploading profile photo. Bucket: "${bucket}", Path: "${storagePath}"`);
+  console.log(`[StorageService] Uploading profile photo to R2. Bucket: "${bucket}", Path: "${storagePath}"`);
 
-  const metadata = await uploadFileToSupabase(
+  const metadata = await uploadFileToR2(
     bucket,
     storagePath,
     blob,
@@ -479,19 +435,19 @@ export async function uploadProfilePhoto(
 }
 
 /**
- * Uploads a progress or performance report to Supabase Storage.
+ * Uploads a progress or performance report to Cloudflare R2.
  */
 export async function uploadReportToStorage(
   studentId: string,
   reportBlob: Blob,
   fileName: string
-): Promise<SupabaseUploadMetadata> {
+): Promise<R2UploadMetadata> {
   const bucket = getBucketName();
   const storagePath = buildReportStoragePath(studentId, fileName);
 
-  console.log(`[StorageService] Uploading report. Bucket: "${bucket}", Path: "${storagePath}"`);
+  console.log(`[StorageService] Uploading report to R2. Bucket: "${bucket}", Path: "${storagePath}"`);
 
-  const metadata = await uploadFileToSupabase(
+  const metadata = await uploadFileToR2(
     bucket,
     storagePath,
     reportBlob,
@@ -502,9 +458,6 @@ export async function uploadReportToStorage(
   return metadata;
 }
 
-/**
- * Uploads a question image to Supabase Storage.
- */
 /**
  * Helper to compress image blobs before storage upload or data URL fallback
  */
@@ -571,11 +524,14 @@ async function compressImageForStorage(blob: Blob, maxDim = 1000, quality = 0.85
   });
 }
 
+/**
+ * Uploads a question image to Cloudflare R2.
+ */
 export async function uploadQuestionImageToStorage(
   topicOrTestId: string,
   fileInput: File | Blob | string,
   fileName: string = "question-image.png"
-): Promise<SupabaseUploadMetadata> {
+): Promise<R2UploadMetadata> {
   let blob: Blob;
   let cleanName = fileName;
 
@@ -585,7 +541,7 @@ export async function uploadQuestionImageToStorage(
       blob = await res.blob();
     } else {
       return {
-        storageProvider: "supabase",
+        storageProvider: "r2",
         bucket: getBucketName(),
         storagePath: fileInput,
         fileName: cleanName,
@@ -606,13 +562,13 @@ export async function uploadQuestionImageToStorage(
   const bucket = getBucketName();
   const storagePath = buildQuestionImageStoragePath(topicOrTestId, cleanName);
 
-  console.log(`[StorageService] Uploading question image. Bucket: "${bucket}", Path: "${storagePath}"`);
+  console.log(`[StorageService] Uploading question image to R2. Bucket: "${bucket}", Path: "${storagePath}"`);
 
   // Compress image before upload to keep payload small and crisp
   const compressed = await compressImageForStorage(blob, 1000, 0.85);
 
   try {
-    const metadata = await uploadFileToSupabase(
+    const metadata = await uploadFileToR2(
       bucket,
       storagePath,
       compressed.blob,
@@ -621,9 +577,9 @@ export async function uploadQuestionImageToStorage(
     );
     return metadata;
   } catch (err: any) {
-    console.warn("[StorageService] Supabase Storage upload error, using compressed Data URL fallback:", err);
+    console.warn("[StorageService] Cloudflare R2 upload error, using compressed Data URL fallback:", err);
     return {
-      storageProvider: "supabase",
+      storageProvider: "r2",
       bucket,
       storagePath: storagePath,
       fileName: cleanName,
@@ -637,19 +593,17 @@ export async function uploadQuestionImageToStorage(
 }
 
 /**
- * Resolves a fresh signed URL (or public URL) for viewing or downloading files.
- * Always generates a fresh signed URL to prevent HTTP 401 Unauthorized errors from expired tokens.
+ * Resolves a fresh signed URL (or public URL) for viewing or downloading files from Cloudflare R2.
  */
 export async function getResolvedViewUrl(
   bucketInput?: string,
   rawPathOrUrl?: string
 ): Promise<string> {
   const bucket = getBucketName(bucketInput);
-  const bucketIsPublic = String(getRuntimeEnvValue("VITE_SUPABASE_BUCKET_PUBLIC", "true")).trim().toLowerCase() === "true";
 
   if (!rawPathOrUrl) {
     console.error("[StorageService] Missing storage path or URL");
-    throw new Error("PDF path is missing.");
+    throw new Error("File path is missing.");
   }
 
   let cleanInput = String(rawPathOrUrl).trim();
@@ -680,10 +634,10 @@ export async function getResolvedViewUrl(
     throw new Error("Invalid storage path specified.");
   }
 
-  // If cleanInput is an external HTTP/HTTPS URL that is NOT a Supabase storage URL, return it directly
+  // If cleanInput is already a full external HTTP/HTTPS URL not pointing to internal storage, return directly
   if (cleanInput.startsWith("http://") || cleanInput.startsWith("https://")) {
-    const isSupabaseStorage = cleanInput.includes("/storage/v1/object/");
-    if (!isSupabaseStorage) {
+    const isInternal = cleanInput.includes("/api/r2/") || cleanInput.includes("r2.cloudflarestorage.com") || cleanInput.includes("/storage/v1/object/");
+    if (!isInternal) {
       console.log(`[StorageService] Using external direct URL: ${cleanInput}`);
       return cleanInput;
     }
@@ -698,39 +652,35 @@ export async function getResolvedViewUrl(
 
   if (!sanitizedPath) {
     if (cleanInput.startsWith("http://") || cleanInput.startsWith("https://")) {
-      console.log(`[StorageService] Using direct HTTP URL fallback: ${cleanInput}`);
       return cleanInput;
     }
     throw new Error("Invalid storage path specified.");
   }
 
-  // Try generating a signed URL first (expires in 10 years = 315360000s)
+  // Obtain pre-signed URL from R2
   try {
-    const { data, error } = await supabase.storage
-      .from(bucket)
-      .createSignedUrl(sanitizedPath, 315360000);
+    const signedUrl = await getR2SignedUrl({
+      bucket,
+      key: sanitizedPath,
+      expiresIn: 86400 * 7, // 7 days
+      operation: "getObject",
+    });
 
-    if (!error && data?.signedUrl) {
-      console.log(`[StorageService] Final URL used by viewer (Fresh Signed URL): ${data.signedUrl}`);
-      return data.signedUrl;
-    }
-
-    if (error) {
-      console.warn(`[StorageService] createSignedUrl warning (${error.message}). Falling back to public URL.`);
+    if (signedUrl) {
+      console.log(`[StorageService] Final URL used by viewer (R2 URL): ${signedUrl}`);
+      return signedUrl;
     }
   } catch (err: any) {
-    console.warn(`[StorageService] createSignedUrl exception (${err.message}). Falling back to public URL.`);
+    console.warn(`[StorageService] getR2SignedUrl warning (${err?.message || err}). Falling back to public URL.`);
   }
 
-  const { data: publicData } = supabase.storage.from(bucket).getPublicUrl(sanitizedPath);
-  const finalPublicUrl = publicData?.publicUrl || (cleanInput.startsWith("http") ? cleanInput : "");
-  console.log(`[StorageService] Final URL used by viewer (Public URL Fallback): ${finalPublicUrl}`);
-
-  return finalPublicUrl || cleanInput;
+  const publicUrl = getR2PublicUrl(bucket, sanitizedPath);
+  console.log(`[StorageService] Final URL used by viewer (Public URL Fallback): ${publicUrl}`);
+  return publicUrl || cleanInput;
 }
 
 /**
- * Downloads a file directly from Supabase Storage.
+ * Downloads a file directly from Cloudflare R2.
  */
 export async function downloadFileFromStorage(
   bucketInput: string,
@@ -740,7 +690,7 @@ export async function downloadFileFromStorage(
   const bucket = getBucketName(bucketInput);
   const storagePath = sanitizeStoragePath(rawStoragePath, bucket);
 
-  console.log("=== [STORAGE DOWNLOAD AUDIT] ===");
+  console.log("=== [CLOUDFLARE R2 DOWNLOAD AUDIT] ===");
   console.log("bucket:", bucket);
   console.log("storagePath:", storagePath);
 
@@ -748,75 +698,8 @@ export async function downloadFileFromStorage(
     throw new Error("Invalid storage path specified.");
   }
 
-  let pdfBlob: Blob | null = null;
-  let lastError: any = null;
-
-  // 1. Try direct Supabase download()
-  const { data, error } = await supabase.storage.from(bucket).download(storagePath);
-
-  console.log("error:", error);
-  console.log("data:", data);
-
-  if (!error && data && data.size > 0) {
-    pdfBlob = data;
-  } else {
-    lastError = error;
-    console.warn(`[StorageService] download() failed or returned empty blob. Trying createSignedUrl fallback...`);
-
-    // 2. Fallback: try createSignedUrl(storagePath, 3600)
-    const { data: signedData, error: signedError } = await supabase.storage
-      .from(bucket)
-      .createSignedUrl(storagePath, 3600);
-
-    console.log("signedUrl error:", signedError);
-    console.log("signedUrl data:", signedData);
-
-    if (!signedError && signedData?.signedUrl) {
-      try {
-        const fetchRes = await fetch(signedData.signedUrl);
-        if (fetchRes.ok) {
-          const blobFromSigned = await fetchRes.blob();
-          if (blobFromSigned && blobFromSigned.size > 0) {
-            pdfBlob = blobFromSigned;
-            lastError = null;
-            console.log(`[StorageService] Download via signed URL succeeded (${blobFromSigned.size} bytes).`);
-          }
-        } else {
-          console.warn(`[StorageService] Signed URL fetch returned HTTP ${fetchRes.status}`);
-        }
-      } catch (fetchErr) {
-        console.warn(`[StorageService] Signed URL fetch exception:`, fetchErr);
-      }
-    }
-  }
-
-  if (!pdfBlob) {
-    const errMsg = lastError?.message || lastError?.error_description || "Object not found or permission denied in Supabase Storage.";
-    throw new Error(`Supabase Storage Error: ${errMsg} (Bucket: "${bucket}", Path: "${storagePath}")`);
-  }
-
-  const validatedBlob = validatePdfBlob(pdfBlob);
-
-  // Verify magic bytes
-  try {
-    const magicSlice = validatedBlob.slice(0, 5);
-    const magicText = await magicSlice.text();
-    if (!magicText.startsWith("%PDF") && !magicText.startsWith("JVBER")) {
-      const errorSlice = validatedBlob.slice(0, 500);
-      const errorText = await errorSlice.text();
-      if (errorText.trim().startsWith("{")) {
-        try {
-          const parsed = JSON.parse(errorText);
-          throw new Error(`Supabase Storage Error: ${parsed.message || parsed.error || errorText} (Bucket: "${bucket}", Path: "${storagePath}")`);
-        } catch (e: any) {
-          if (e.message?.includes("Supabase Storage Error")) throw e;
-        }
-      }
-      throw new Error(`Invalid PDF document format: header does not match %PDF (received "${magicText.substring(0, 10)}"). Path: "${storagePath}"`);
-    }
-  } catch (magicErr: any) {
-    if (magicErr.message?.includes("Invalid PDF") || magicErr.message?.includes("Supabase Storage Error")) throw magicErr;
-  }
+  const { blob } = await downloadFromR2({ bucket, key: storagePath });
+  const validatedBlob = validatePdfBlob(blob);
 
   console.log(`[StorageService] Download validation succeeded. bucket=${bucket} path=${storagePath} blobSize=${validatedBlob.size} mimeType=${validatedBlob.type || "unknown"}`);
 
@@ -835,7 +718,7 @@ export async function downloadFileFromStorage(
 }
 
 /**
- * Deletes a file from Supabase Storage.
+ * Deletes a file from Cloudflare R2.
  */
 export async function deleteFileFromStorage(
   rawStoragePath: string,
@@ -862,9 +745,9 @@ export async function deleteFileFromStorage(
   if (
     cleanPath.startsWith("data:") ||
     cleanPath.startsWith("blob:") ||
-    (cleanPath.startsWith("http") && !cleanPath.includes("supabase"))
+    (cleanPath.startsWith("http") && !cleanPath.includes("r2") && !cleanPath.includes("/api/r2/"))
   ) {
-    console.log(`[StorageService] Path is base64 data, blob URL, or non-Supabase external URL. Skipping Supabase Storage deletion.`);
+    console.log(`[StorageService] Path is base64 data, blob URL, or external URL. Skipping Cloudflare R2 deletion.`);
     return { success: true, storagePath: cleanPath, bucket };
   }
 
@@ -875,49 +758,43 @@ export async function deleteFileFromStorage(
     return { success: true, storagePath: "", bucket };
   }
 
-  console.log(`[StorageService] Invoking Supabase remove(): bucket="${bucket}", storagePath="${storagePath}"`);
+  console.log(`[StorageService] Invoking Cloudflare R2 delete: bucket="${bucket}", storagePath="${storagePath}"`);
 
-  const { data, error } = await supabase.storage.from(bucket).remove([storagePath]);
+  try {
+    const result = await deleteFromR2({ bucket, key: storagePath });
+    console.log(`[StorageService] Successfully removed file from Cloudflare R2: "${storagePath}"`);
 
-  console.log(`[StorageService] Storage removal response:`, { bucket, storagePath, data, error });
+    // Clear entry from browser Cache Storage if present
+    try {
+      if (typeof window !== "undefined" && "caches" in window) {
+        const cache = await caches.open("student-pdf-cache");
+        const keys = await cache.keys();
+        for (const req of keys) {
+          if (req.url.includes(storagePath) || req.url.includes(encodeURIComponent(storagePath))) {
+            await cache.delete(req);
+            console.log(`[StorageService Cache] Removed cached entry for path: ${storagePath}`);
+          }
+        }
+      }
+    } catch (cacheErr) {
+      console.warn(`[StorageService Cache] Warning while clearing Cache Storage:`, cacheErr);
+    }
 
-  if (error) {
+    return { success: true, data: result, storagePath, bucket };
+  } catch (error: any) {
     const errorMsg = error.message || JSON.stringify(error);
     const isNotFound =
       errorMsg.toLowerCase().includes("not found") ||
       errorMsg.toLowerCase().includes("does not exist") ||
       errorMsg.toLowerCase().includes("not_found") ||
-      (error as any).status === 404 ||
-      (error as any).status === "404" ||
-      (error as any).statusCode === 404 ||
-      (error as any).statusCode === "404";
+      error.status === 404;
 
     if (isNotFound) {
-      console.warn(`[StorageService Warning] Storage file no longer exists in Supabase Storage: "${storagePath}". Proceeding.`);
-      return { success: true, data, storagePath, bucket };
+      console.warn(`[StorageService Warning] File no longer exists in Cloudflare R2: "${storagePath}". Proceeding.`);
+      return { success: true, storagePath, bucket };
     }
 
-    console.error(`[StorageService Error] Supabase removal failed for path "${storagePath}":`, error);
-    throw new Error(`Supabase Storage deletion failed: ${errorMsg}`);
+    console.error(`[StorageService Error] Cloudflare R2 removal failed for path "${storagePath}":`, error);
+    throw new Error(`Cloudflare R2 deletion failed: ${errorMsg}`);
   }
-
-  console.log(`[StorageService] Successfully removed file from Supabase Storage: "${storagePath}"`);
-
-  // Clear entry from browser Cache Storage if present
-  try {
-    if ("caches" in window) {
-      const cache = await caches.open("student-pdf-cache");
-      const keys = await cache.keys();
-      for (const req of keys) {
-        if (req.url.includes(storagePath) || req.url.includes(encodeURIComponent(storagePath))) {
-          await cache.delete(req);
-          console.log(`[StorageService Cache] Removed cached entry for path: ${storagePath}`);
-        }
-      }
-    }
-  } catch (cacheErr) {
-    console.warn(`[StorageService Cache] Warning while clearing Cache Storage:`, cacheErr);
-  }
-
-  return { success: true, data, storagePath, bucket };
 }

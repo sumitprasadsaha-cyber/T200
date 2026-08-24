@@ -13,9 +13,40 @@ import {
   saveTestAttemptDoc, 
   subscribeToTestAttempts 
 } from "./firestoreService";
+import {
+  downloadFromR2,
+  uploadToR2,
+  deleteFromR2,
+  deleteMultipleFromR2,
+  listFromR2,
+  getR2BucketName,
+} from "./r2Client";
 
-const PRACTICE_TESTS_BUCKET = "academy-connect-files";
+const PRACTICE_TESTS_BUCKET = getR2BucketName();
 const TEST_SCORE_CACHE_KEY = "tuition_student_test_score_cache";
+
+async function downloadJsonFromR2<T>(key: string): Promise<T | null> {
+  try {
+    const { blob } = await downloadFromR2({ bucket: PRACTICE_TESTS_BUCKET, key });
+    if (blob) {
+      const text = await blob.text();
+      if (text) return JSON.parse(text) as T;
+    }
+  } catch (err) {
+    // ignore
+  }
+  return null;
+}
+
+async function uploadJsonToR2(key: string, data: any): Promise<void> {
+  try {
+    const jsonStr = JSON.stringify(data, null, 2);
+    const blob = new Blob([jsonStr], { type: "application/json" });
+    await uploadToR2({ bucket: PRACTICE_TESTS_BUCKET, key, file: blob, mimeType: "application/json" });
+  } catch (err) {
+    console.warn(`[ScorePersistence] R2 upload error for ${key}:`, err);
+  }
+}
 
 // In-memory cache for fast, synchronous UI reads
 let inMemoryAttempts: TestAttemptRecord[] = [];
@@ -85,24 +116,15 @@ export async function fetchStudentTestAttemptsFromSupabase(
 
   let remoteAttempts: TestAttemptRecord[] = [];
 
-  // 1. Fetch student-specific JSON file from Supabase Storage bucket
+  // 1. Fetch student-specific JSON file from Cloudflare R2 bucket
   try {
     const filePath = getStudentAttemptStoragePath(studentId);
-    const { data, error } = await supabase.storage
-      .from(PRACTICE_TESTS_BUCKET)
-      .download(filePath);
-
-    if (!error && data) {
-      const text = await data.text();
-      if (text) {
-        const parsed = JSON.parse(text);
-        if (Array.isArray(parsed)) {
-          remoteAttempts = parsed;
-        }
-      }
+    const parsed = await downloadJsonFromR2<TestAttemptRecord[]>(filePath);
+    if (Array.isArray(parsed)) {
+      remoteAttempts = parsed;
     }
   } catch (err) {
-    console.warn(`[ScorePersistence] Error downloading per-student file for ${studentId}:`, err);
+    console.warn(`[ScorePersistence] Error downloading per-student file for ${studentId} from R2:`, err);
   }
 
   // 2. Also query Supabase DB Table if it exists
@@ -145,30 +167,21 @@ export async function fetchStudentTestAttemptsFromSupabase(
     // DB table might not exist; Storage fallback works
   }
 
-  // 3. Fallback: Download global test_attempts.json from Supabase Storage
+  // 3. Fallback: Download global test_attempts.json from Cloudflare R2
   if (remoteAttempts.length === 0) {
     try {
-      const { data: globalData, error: globalErr } = await supabase.storage
-        .from(PRACTICE_TESTS_BUCKET)
-        .download("practice_tests/test_attempts.json");
-
-      if (!globalErr && globalData) {
-        const text = await globalData.text();
-        if (text) {
-          const parsed = JSON.parse(text);
-          if (Array.isArray(parsed)) {
-            const studentMatches = parsed.filter((a) => {
-              if (!a) return false;
-              const aId = cleanId(a.studentId);
-              const aName = cleanId(a.studentName);
-              return (studentId && aId === cId) || (studentName && aName === cleanId(studentName));
-            });
-            remoteAttempts = [...remoteAttempts, ...studentMatches];
-          }
-        }
+      const parsed = await downloadJsonFromR2<TestAttemptRecord[]>("practice_tests/test_attempts.json");
+      if (Array.isArray(parsed)) {
+        const studentMatches = parsed.filter((a) => {
+          if (!a) return false;
+          const aId = cleanId(a.studentId);
+          const aName = cleanId(a.studentName);
+          return (studentId && aId === cId) || (studentName && aName === cleanId(studentName));
+        });
+        remoteAttempts = [...remoteAttempts, ...studentMatches];
       }
     } catch (err) {
-      console.warn("[ScorePersistence] Global file download fallback warning:", err);
+      console.warn("[ScorePersistence] Global file download fallback warning from R2:", err);
     }
   }
 
@@ -241,34 +254,17 @@ export async function savePracticeTestAttemptToSupabase(
 
       const finalStudentAttempts = deduplicateAttempts(existingStudentAttempts);
 
-      // 2b. Save per-student JSON file to Supabase Storage
+      // 2b. Save per-student JSON file to Cloudflare R2
       try {
         const filePath = getStudentAttemptStoragePath(studentId);
-        const blob = new Blob([JSON.stringify(finalStudentAttempts, null, 2)], {
-          type: "application/json"
-        });
-        await supabase.storage
-          .from(PRACTICE_TESTS_BUCKET)
-          .upload(filePath, blob, { upsert: true });
+        await uploadJsonToR2(filePath, finalStudentAttempts);
       } catch (err) {
         console.warn(`[ScorePersistence] Storage upload error for student ${studentId}:`, err);
       }
 
-      // 2c. Update global test_attempts.json in Supabase Storage
+      // 2c. Update global test_attempts.json in Cloudflare R2
       try {
-        let globalList: TestAttemptRecord[] = [];
-        const { data: globalData } = await supabase.storage
-          .from(PRACTICE_TESTS_BUCKET)
-          .download("practice_tests/test_attempts.json");
-
-        if (globalData) {
-          const text = await globalData.text();
-          if (text) {
-            const parsed = JSON.parse(text);
-            if (Array.isArray(parsed)) globalList = parsed;
-          }
-        }
-
+        const globalList = (await downloadJsonFromR2<TestAttemptRecord[]>("practice_tests/test_attempts.json")) || [];
         const otherStudentsAttempts = globalList.filter((a) => {
           const aId = cleanId(a.studentId);
           const aName = cleanId(a.studentName);
@@ -276,12 +272,7 @@ export async function savePracticeTestAttemptToSupabase(
         });
 
         const mergedGlobal = deduplicateAttempts([...otherStudentsAttempts, ...finalStudentAttempts]);
-        const globalBlob = new Blob([JSON.stringify(mergedGlobal, null, 2)], {
-          type: "application/json"
-        });
-        await supabase.storage
-          .from(PRACTICE_TESTS_BUCKET)
-          .upload("practice_tests/test_attempts.json", globalBlob, { upsert: true });
+        await uploadJsonToR2("practice_tests/test_attempts.json", mergedGlobal);
       } catch (err) {
         console.warn("[ScorePersistence] Global attempts upload error:", err);
       }
@@ -565,21 +556,16 @@ export async function deleteAllAttemptsAndScoresFromPersistence(): Promise<{ suc
     console.warn("[ScorePersistence] Error deleting all attempts from Supabase DB:", err);
   }
 
-  // 2. Clear Supabase Storage `practice_tests/test_attempts.json` and student attempt files
+  // 2. Clear Cloudflare R2 `practice_tests/test_attempts.json` and student attempt files
   try {
-    const emptyBlob = new Blob([JSON.stringify([], null, 2)], { type: "application/json" });
-    await supabase.storage
-      .from(PRACTICE_TESTS_BUCKET)
-      .upload("practice_tests/test_attempts.json", emptyBlob, { upsert: true });
+    await uploadJsonToR2("practice_tests/test_attempts.json", []);
 
     // List and delete individual student attempt files
-    const { data: fileList } = await supabase.storage
-      .from(PRACTICE_TESTS_BUCKET)
-      .list("practice_tests/student_attempts", { limit: 1000 });
+    const fileList = await listFromR2({ bucket: PRACTICE_TESTS_BUCKET, prefix: "practice_tests/student_attempts" });
 
     if (Array.isArray(fileList) && fileList.length > 0) {
-      const pathsToDelete = fileList.map((f) => `practice_tests/student_attempts/${f.name}`);
-      await supabase.storage.from(PRACTICE_TESTS_BUCKET).remove(pathsToDelete);
+      const pathsToDelete = fileList.map((f) => f.key);
+      await deleteMultipleFromR2({ bucket: PRACTICE_TESTS_BUCKET, keys: pathsToDelete });
     }
   } catch (err) {
     console.warn("[ScorePersistence] Error wiping storage attempts:", err);
@@ -658,36 +644,24 @@ export async function deleteTopicAttemptsFromPersistence(
     console.warn("[ScorePersistence] Error deleting attempts from Supabase DB:", err);
   }
 
-  // 2. Delete/filter matching attempts in Supabase Storage `practice_tests/test_attempts.json`
+  // 2. Delete/filter matching attempts in Cloudflare R2 `practice_tests/test_attempts.json`
   try {
-    const { data: globalData } = await supabase.storage
-      .from(PRACTICE_TESTS_BUCKET)
-      .download("practice_tests/test_attempts.json");
+    const parsed = await downloadJsonFromR2<TestAttemptRecord[]>("practice_tests/test_attempts.json");
+    if (Array.isArray(parsed)) {
+      const filtered = parsed.filter((a) => {
+        const aClass = (a.classGrade || "").toLowerCase().trim();
+        const aSubj = (a.subject || "").toLowerCase().trim();
+        const aTopic = (a.topicName || "").toLowerCase().trim();
+        const aTopicClean = aTopic.replace(/[^a-z0-9]/g, "");
+        const isChapterMatch = Number(a.chapterNo) === Number(chapterNo);
 
-    if (globalData) {
-      const text = await globalData.text();
-      if (text) {
-        const parsed: TestAttemptRecord[] = JSON.parse(text);
-        if (Array.isArray(parsed)) {
-          const filtered = parsed.filter((a) => {
-            const aClass = (a.classGrade || "").toLowerCase().trim();
-            const aSubj = (a.subject || "").toLowerCase().trim();
-            const aTopic = (a.topicName || "").toLowerCase().trim();
-            const aTopicClean = aTopic.replace(/[^a-z0-9]/g, "");
-            const isChapterMatch = Number(a.chapterNo) === Number(chapterNo);
+        const isMatch =
+          (aClass === normClass && aSubj === normSubj && isChapterMatch && (aTopic === normTopic || aTopicClean === normTopicClean)) ||
+          (isChapterMatch && aTopicClean === normTopicClean);
+        return !isMatch;
+      });
 
-            const isMatch =
-              (aClass === normClass && aSubj === normSubj && isChapterMatch && (aTopic === normTopic || aTopicClean === normTopicClean)) ||
-              (isChapterMatch && aTopicClean === normTopicClean);
-            return !isMatch;
-          });
-
-          const blob = new Blob([JSON.stringify(filtered, null, 2)], { type: "application/json" });
-          await supabase.storage
-            .from(PRACTICE_TESTS_BUCKET)
-            .upload("practice_tests/test_attempts.json", blob, { upsert: true });
-        }
-      }
+      await uploadJsonToR2("practice_tests/test_attempts.json", filtered);
     }
   } catch (err) {
     console.warn("[ScorePersistence] Error updating global test_attempts.json in Storage:", err);
