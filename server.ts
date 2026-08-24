@@ -343,53 +343,153 @@ app.get("/api/r2/download", async (req, res) => {
   }
 });
 
-// 5. Delete single object
-app.post("/api/r2/delete", async (req, res) => {
+// 5. Delete single object (Supports POST and DELETE, with body and query param parsing)
+const handleDeleteSingleObject = async (req: express.Request, res: express.Response) => {
   try {
-    const { bucket, key } = req.body;
+    const bucket = req.body?.bucket || (req.query.bucket as string);
+    const key =
+      req.body?.key ||
+      req.body?.storagePath ||
+      req.body?.path ||
+      (req.query.key as string) ||
+      (req.query.storagePath as string) ||
+      (req.query.path as string);
+
     if (!key) {
       return res.status(400).json({ error: "Missing required 'key' parameter." });
     }
 
-    const result = await deleteObjectFromR2({ bucket, key });
-    return res.json(result);
+    const cleanKey = String(key).replace(/^\/+/, "");
+    console.log(`[Server R2] Executing delete for object: bucket="${bucket || "default"}", key="${cleanKey}" (Method: ${req.method})`);
+
+    const result = await deleteObjectFromR2({ bucket, key: cleanKey });
+    return res.status(200).json(result);
   } catch (err: any) {
     console.error("[Server R2] Delete error:", {
-      endpoint: "/api/r2/delete",
+      endpoint: req.originalUrl,
+      method: req.method,
       error: err.message,
       stack: err.stack,
     });
     return res.status(500).json({
       error: err.message || "Failed to delete file from Cloudflare R2.",
-      endpoint: "/api/r2/delete",
+      endpoint: req.originalUrl,
       stack: err.stack,
     });
   }
-});
+};
 
-// 6. Delete multiple objects
-app.post("/api/r2/delete-multiple", async (req, res) => {
+app.post("/api/r2/delete", handleDeleteSingleObject);
+app.delete("/api/r2/delete", handleDeleteSingleObject);
+app.delete("/api/r2/file", handleDeleteSingleObject);
+app.delete("/api/storage/delete", handleDeleteSingleObject);
+app.post("/api/storage/delete", handleDeleteSingleObject);
+app.delete("/api/files", handleDeleteSingleObject);
+app.post("/api/files/delete", handleDeleteSingleObject);
+
+// 6. Delete multiple objects (Supports POST and DELETE)
+const handleDeleteMultipleObjects = async (req: express.Request, res: express.Response) => {
   try {
-    const { bucket, keys } = req.body;
+    const bucket = req.body?.bucket || (req.query.bucket as string);
+    let keys = req.body?.keys || req.query?.keys;
+    if (typeof keys === "string") {
+      try {
+        keys = JSON.parse(keys);
+      } catch {
+        keys = keys.split(",").map((k: string) => k.trim());
+      }
+    }
+
     if (!keys || !Array.isArray(keys) || keys.length === 0) {
       return res.status(400).json({ error: "Missing or invalid 'keys' array parameter." });
     }
 
     const result = await deleteObjectsFromR2({ bucket, keys });
-    return res.json(result);
+    return res.status(200).json(result);
   } catch (err: any) {
     console.error("[Server R2] Multiple delete error:", {
-      endpoint: "/api/r2/delete-multiple",
+      endpoint: req.originalUrl,
+      method: req.method,
       error: err.message,
       stack: err.stack,
     });
     return res.status(500).json({
       error: err.message || "Failed to delete files from Cloudflare R2.",
-      endpoint: "/api/r2/delete-multiple",
+      endpoint: req.originalUrl,
       stack: err.stack,
     });
   }
-});
+};
+
+app.post("/api/r2/delete-multiple", handleDeleteMultipleObjects);
+app.delete("/api/r2/delete-multiple", handleDeleteMultipleObjects);
+
+// 7. Atomic Replace Endpoint
+const handleReplaceObject = async (req: express.Request, res: express.Response) => {
+  try {
+    const bucket = (req.query.bucket as string) || req.body?.bucket;
+    const oldKey = req.body?.oldKey || req.body?.oldStoragePath || (req.query.oldKey as string);
+    const newKey = req.body?.newKey || req.body?.newStoragePath || req.body?.key || (req.query.key as string);
+    const base64 = req.body?.base64;
+    const mimeType = req.body?.mimeType || (req.query.mimeType as string) || "application/octet-stream";
+
+    console.log(`[Server R2] Processing Replace request: oldKey="${oldKey}", newKey="${newKey}"`);
+
+    // 1. Delete old key if provided
+    if (oldKey) {
+      try {
+        await deleteObjectFromR2({ bucket, key: oldKey });
+        console.log(`[Server R2] Old object deleted during replace: ${oldKey}`);
+      } catch (delErr) {
+        console.warn(`[Server R2] Notice: Old object was not present or already deleted: ${oldKey}`, delErr);
+      }
+    }
+
+    // 2. Upload new file if base64 provided
+    if (newKey && base64) {
+      const buffer = Buffer.from(base64, "base64");
+      const uploadRes = await uploadObjectToR2({
+        bucket,
+        key: newKey,
+        body: buffer,
+        contentType: mimeType,
+      });
+
+      const config = getR2ServerConfig();
+      const downloadUrl = `/api/r2/download?bucket=${encodeURIComponent(uploadRes.bucket)}&key=${encodeURIComponent(newKey)}`;
+      const publicUrl = config.publicUrl
+        ? `${config.publicUrl}/${newKey.replace(/^\/+/, "")}`
+        : downloadUrl;
+
+      return res.status(200).json({
+        success: true,
+        bucket: uploadRes.bucket,
+        key: uploadRes.key,
+        etag: uploadRes.etag,
+        url: downloadUrl,
+        publicUrl,
+        size: buffer.length,
+        mimeType,
+        replaced: true,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      oldKeyDeleted: Boolean(oldKey),
+      message: "Replace processed successfully.",
+    });
+  } catch (err: any) {
+    console.error("[Server R2] Replace error:", err);
+    return res.status(500).json({
+      error: err.message || "Failed to execute replacement in Cloudflare R2.",
+      stack: err.stack,
+    });
+  }
+};
+
+app.post("/api/r2/replace", handleReplaceObject);
+app.put("/api/r2/replace", handleReplaceObject);
 
 // 7. List objects by prefix
 app.post("/api/r2/list", async (req, res) => {
