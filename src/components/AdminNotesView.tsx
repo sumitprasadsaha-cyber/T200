@@ -551,7 +551,8 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
       }, 800);
     } catch (err: any) {
       console.error("Failed uploading note:", err);
-      setFormError("Unable to upload notes. Please try again.");
+      const specificErr = err?.message || "Unable to upload notes. Please try again.";
+      setFormError(specificErr);
       setIsUploading(false);
       setUploadProgress(0);
     }

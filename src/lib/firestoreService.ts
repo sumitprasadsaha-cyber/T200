@@ -1447,7 +1447,6 @@ export function subscribeToClassNotes(
 }
 
 export async function saveClassNoteDoc(note: ClassNote): Promise<void> {
-  const db = await getFirebaseDb();
   const currentLocal = getLocalClassNotes();
   const exists = currentLocal.some((n) => n.id === note.id);
   const updatedLocal = exists
@@ -1455,13 +1454,15 @@ export async function saveClassNoteDoc(note: ClassNote): Promise<void> {
     : [note, ...currentLocal];
   saveLocalClassNotes(updatedLocal);
 
+  const db = await getFirebaseDb();
   if (!db) return;
 
   try {
     const docRef = doc(db, "class_notes", note.id);
     await setDoc(docRef, cleanObjectForFirestore(note), { merge: true });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `class_notes/${note.id}`);
+    console.log(`[Firestore] Successfully persisted class note: class_notes/${note.id}`);
+  } catch (err: any) {
+    console.warn(`[Firestore] saveClassNoteDoc warning for class_notes/${note.id}:`, err);
   }
 }
 

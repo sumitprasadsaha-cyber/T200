@@ -71,7 +71,7 @@ export function autoCleanupStorageIfOverLimit(limitMB: number = 2): void {
   } catch (_) {}
 }
 
-const MAX_LOCAL_STORAGE_ITEM_BYTES = 50 * 1024;
+const MAX_LOCAL_STORAGE_ITEM_BYTES = 2 * 1024 * 1024; // 2 MB per item limit to comfortably allow class notes and student lists
 
 function estimateBytes(value: string): number {
   return value.length * 2;

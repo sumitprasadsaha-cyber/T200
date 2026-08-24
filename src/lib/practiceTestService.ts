@@ -11,6 +11,9 @@ import { deleteTopicAttemptsFromPersistence, deleteAllAttemptsAndScoresFromPersi
 
 const TESTS_CACHE_KEY = "tuition_topic_practice_tests_bank";
 const SYNC_QUEUE_KEY = "tuition_practice_tests_sync_queue";
+const PRACTICE_TESTS_BUCKET = "academy-connect-files";
+const PRACTICE_TESTS_FILE_PATH = "practice_tests/test_bank.json";
+const PRACTICE_TEST_ATTEMPTS_FILE_PATH = "practice_tests/test_attempts.json";
 
 const IDB_DB_NAME = "tuition_practice_tests_db";
 const IDB_DB_VERSION = 1;
@@ -466,10 +469,6 @@ export function buildQuestionId(
 // ----------------------------------------------------
 // LOCAL CACHE & STORAGE SYNC HELPERS
 // ----------------------------------------------------
-
-const PRACTICE_TESTS_BUCKET = getR2BucketName();
-const PRACTICE_TESTS_FILE_PATH = "practice_tests/test_bank.json";
-const PRACTICE_TEST_ATTEMPTS_FILE_PATH = "practice_tests/test_attempts.json";
 
 export interface TopicPracticeTestMetadata {
   id: string;

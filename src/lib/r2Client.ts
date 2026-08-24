@@ -126,7 +126,7 @@ export async function getR2SignedUrl(params: {
 }
 
 /**
- * Uploads a file/blob to Cloudflare R2 with progress tracking via XMLHttpRequest or backend proxy.
+ * Uploads a file/blob to Cloudflare R2 with progress tracking via backend proxy or presigned PUT URL.
  */
 export async function uploadToR2(params: {
   bucket?: string;
@@ -141,7 +141,116 @@ export async function uploadToR2(params: {
 
   console.log(`[R2Client] Initiating upload to Cloudflare R2: bucket="${bucket}", key="${cleanKey}", size=${params.file.size}`);
 
-  // Step 1: Try Presigned PUT URL first (Direct S3 upload to Cloudflare R2)
+  // Step 1: Upload directly via Same-Origin Backend API Proxy (/api/r2/upload)
+  try {
+    const proxyResult = await new Promise<R2UploadResult>((resolve, reject) => {
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open(
+          "POST",
+          `/api/r2/upload?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanKey)}&mimeType=${encodeURIComponent(mimeType)}`,
+          true
+        );
+        xhr.setRequestHeader("Content-Type", mimeType);
+
+        if (xhr.upload && params.onProgress) {
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable && e.total > 0) {
+              const pct = Math.min(99, Math.max(0, Math.round((e.loaded / e.total) * 100)));
+              params.onProgress!(pct);
+            }
+          };
+        }
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            if (params.onProgress) params.onProgress(100);
+            try {
+              const resData = JSON.parse(xhr.responseText || "{}");
+              const finalUrl = resData.url || getR2PublicUrl(bucket, cleanKey);
+              resolve({
+                bucket,
+                key: cleanKey,
+                url: finalUrl,
+                size: params.file.size,
+                mimeType,
+                etag: resData.etag,
+              });
+            } catch {
+              resolve({
+                bucket,
+                key: cleanKey,
+                url: getR2PublicUrl(bucket, cleanKey),
+                size: params.file.size,
+                mimeType,
+              });
+            }
+          } else {
+            let errDetail = `HTTP ${xhr.status}`;
+            try {
+              const parsed = JSON.parse(xhr.responseText);
+              errDetail = parsed.error || parsed.message || errDetail;
+            } catch {
+              // Keep default
+            }
+            reject(new Error(`Cloudflare R2 Upload Failed: ${errDetail}`));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error("Cloudflare R2 Upload Network Error"));
+        xhr.ontimeout = () => reject(new Error("Cloudflare R2 Upload Timeout"));
+        xhr.send(params.file);
+      } catch (err: any) {
+        reject(new Error(`Cloudflare R2 Upload Exception: ${err?.message || err}`));
+      }
+    });
+
+    return proxyResult;
+  } catch (proxyError: any) {
+    console.warn("[R2Client] Binary proxy upload attempt encountered an issue, trying base64 fallback:", proxyError);
+  }
+
+  // Step 2: Fallback to Base64 JSON Upload via Backend Proxy
+  try {
+    const base64Data = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const base64 = result.includes(",") ? result.split(",")[1] : result;
+        resolve(base64);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(params.file);
+    });
+
+    const res = await fetch(`/api/r2/upload?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanKey)}&mimeType=${encodeURIComponent(mimeType)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bucket,
+        key: cleanKey,
+        base64: base64Data,
+        mimeType,
+      }),
+    });
+
+    if (res.ok) {
+      const json = await res.json();
+      if (params.onProgress) params.onProgress(100);
+      return {
+        bucket,
+        key: cleanKey,
+        url: json.url || getR2PublicUrl(bucket, cleanKey),
+        size: params.file.size,
+        mimeType,
+        etag: json.etag,
+      };
+    }
+  } catch (base64Err) {
+    console.warn("[R2Client] Base64 fallback error:", base64Err);
+  }
+
+  // Step 3: Presigned URL Fallback
   let presignedPutUrl: string | null = null;
   try {
     const presignRes = await fetch("/api/r2/signed-url", {
@@ -211,66 +320,7 @@ export async function uploadToR2(params: {
     }
   }
 
-  // Step 2: Upload via Backend Proxy Endpoint (/api/r2/upload)
-  console.log(`[R2Client] Uploading via backend API proxy /api/r2/upload...`);
-
-  return new Promise<R2UploadResult>((resolve, reject) => {
-    try {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", `/api/r2/upload?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanKey)}&mimeType=${encodeURIComponent(mimeType)}`, true);
-      xhr.setRequestHeader("Content-Type", mimeType);
-
-      if (xhr.upload && params.onProgress) {
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable && e.total > 0) {
-            const pct = Math.min(99, Math.max(0, Math.round((e.loaded / e.total) * 100)));
-            params.onProgress!(pct);
-          }
-        };
-      }
-
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          if (params.onProgress) params.onProgress(100);
-          try {
-            const resData = JSON.parse(xhr.responseText || "{}");
-            const finalUrl = resData.url || getR2PublicUrl(bucket, cleanKey);
-            resolve({
-              bucket,
-              key: cleanKey,
-              url: finalUrl,
-              size: params.file.size,
-              mimeType,
-              etag: resData.etag,
-            });
-          } catch {
-            resolve({
-              bucket,
-              key: cleanKey,
-              url: getR2PublicUrl(bucket, cleanKey),
-              size: params.file.size,
-              mimeType,
-            });
-          }
-        } else {
-          let errDetail = `HTTP ${xhr.status}`;
-          try {
-            const parsed = JSON.parse(xhr.responseText);
-            errDetail = parsed.error || parsed.message || errDetail;
-          } catch {
-            // Keep default
-          }
-          reject(new Error(`Cloudflare R2 Upload Failed: ${errDetail}`));
-        }
-      };
-
-      xhr.onerror = () => reject(new Error("Cloudflare R2 Upload Network Error"));
-      xhr.ontimeout = () => reject(new Error("Cloudflare R2 Upload Timeout"));
-      xhr.send(params.file);
-    } catch (err: any) {
-      reject(new Error(`Cloudflare R2 Upload Exception: ${err?.message || err}`));
-    }
-  });
+  throw new Error("Cloudflare R2 Upload: All upload methods (Direct Proxy, Base64, and Presigned) failed.");
 }
 
 /**
