@@ -82,7 +82,7 @@ async function migrateAll() {
     let mimeType = data.mimeType || data.mime_type || (cleanKey.endsWith(".pdf") ? "application/pdf" : "image/png");
 
     if (existingHead.exists) {
-      console.log(`  ✓ Object already exists in R2 (${existingHead.size} bytes).`);
+      console.log(`  ✓ Object already exists in R2 (${existingHead.contentLength} bytes).`);
       alreadyR2Count++;
     } else {
       // Need to fetch from Supabase URL or existing pdfUrl

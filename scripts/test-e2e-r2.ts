@@ -50,7 +50,7 @@ async function runE2ETests() {
 
   // 2. Verify List / Connectivity
   console.log("\n[2/7] Testing R2 Bucket Connection & List Objects...");
-  const listRes = await listObjectsFromR2({ bucket, limit: 10 });
+  const listRes = await listObjectsFromR2({ bucket, maxKeys: 10 });
   console.log(`Found ${listRes.objects.length} sample objects in R2 bucket.`);
   console.log("Bucket listing works: YES ✓");
 

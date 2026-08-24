@@ -36,12 +36,13 @@ function getRuntimeEnvValue(key: string, fallback = ""): string {
 
 function isInvalidStorageReference(input: string): boolean {
   const clean = String(input || "").trim().toLowerCase();
+  if (clean.includes("/api/r2/")) {
+    return false; // Valid proxy endpoint
+  }
   return (
     clean.startsWith("blob:") ||
     clean.startsWith("data:") ||
     clean.startsWith("file://") ||
-    clean.includes("localhost") ||
-    clean.includes("127.0.0.1") ||
     clean.includes("temporary") ||
     clean.includes("temp/") ||
     clean.includes("tmp/")
@@ -135,32 +136,28 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
     }
   }
 
-  // 1. Normalize slashes & remove quotes
-  cleaned = cleaned.replace(/\\/g, "/");
-  cleaned = cleaned.replace(/^["']|["']$/g, "");
-
-  // 2. Safely decode URI encoded characters if present
-  if (cleaned.includes("%")) {
+  // 1. Check for /api/r2/download or /api/r2/view endpoint (either absolute or relative URL)
+  if (cleaned.includes("/api/r2/download") || cleaned.includes("/api/r2/view") || cleaned.includes("/api/r2/signed-url")) {
     try {
-      let decoded = decodeURIComponent(cleaned);
-      if (decoded.includes("%")) {
-        decoded = decodeURIComponent(decoded);
+      const fakeBase = "http://localhost";
+      const urlObj = new URL(cleaned.startsWith("http") ? cleaned : `${fakeBase}${cleaned.startsWith("/") ? "" : "/"}${cleaned}`);
+      const keyParam = urlObj.searchParams.get("key");
+      if (keyParam) {
+        cleaned = decodeURIComponent(keyParam);
       }
-      cleaned = decoded;
     } catch {
-      // Keep cleaned as is if decode fails
+      const match = cleaned.match(/[?&]key=([^&]+)/);
+      if (match && match[1]) {
+        cleaned = decodeURIComponent(match[1]);
+      }
     }
   }
 
-  // 3. Strip query parameters and hash fragments if not a full HTTPS URL
-  if (cleaned.includes("?") && !cleaned.startsWith("http://") && !cleaned.startsWith("https://")) {
-    cleaned = cleaned.split("?")[0];
-  }
-  if (cleaned.includes("#") && !cleaned.startsWith("http://") && !cleaned.startsWith("https://")) {
-    cleaned = cleaned.split("#")[0];
-  }
+  // 2. Normalize slashes & remove quotes
+  cleaned = cleaned.replace(/\\/g, "/");
+  cleaned = cleaned.replace(/^["']|["']$/g, "");
 
-  // 4. Handle gs:// or s3:// protocol URLs
+  // 3. Handle gs:// or s3:// protocol URLs
   if (cleaned.startsWith("gs://") || cleaned.startsWith("s3://")) {
     const withoutPrefix = cleaned.substring(5);
     const slashIdx = withoutPrefix.indexOf("/");
@@ -171,19 +168,16 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
     }
   }
 
-  // 5. Extract path from full HTTPS URLs if provided
+  // 4. Extract path from full HTTPS URLs (e.g. public R2 domain or Supabase legacy URL)
   if (cleaned.startsWith("http://") || cleaned.startsWith("https://")) {
     try {
       const urlObj = new URL(cleaned);
       const pathname = urlObj.pathname;
-      
-      // R2 download endpoint pattern
-      const r2ApiMatch = pathname.match(/\/api\/r2\/download/);
-      if (r2ApiMatch && urlObj.searchParams.get("key")) {
-        return sanitizeStoragePath(urlObj.searchParams.get("key")!);
+
+      if (pathname.includes("/api/r2/download") && urlObj.searchParams.get("key")) {
+        return sanitizeStoragePath(urlObj.searchParams.get("key")!, bucketName);
       }
 
-      // Supabase storage match (for backward compatibility during migration)
       const supabaseMatch = pathname.match(
         /\/storage\/v1\/object\/(?:public|sign|authenticated)\/[^\/]+\/(.+)/
       );
@@ -194,7 +188,6 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
           cleaned = supabaseMatch[1];
         }
       } else {
-        // Cloudflare R2 direct public/custom domain URL
         const pathSegments = pathname.replace(/^\/+/, "").split("/");
         const activeBucket = getBucketName(bucketName);
         if (pathSegments[0] === activeBucket) {
@@ -211,10 +204,31 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
     }
   }
 
-  // 6. Remove leading and duplicate slashes
+  // 5. Safely decode URI encoded characters if present
+  if (cleaned.includes("%")) {
+    try {
+      let decoded = decodeURIComponent(cleaned);
+      if (decoded.includes("%")) {
+        decoded = decodeURIComponent(decoded);
+      }
+      cleaned = decoded;
+    } catch {
+      // Keep cleaned as is if decode fails
+    }
+  }
+
+  // 6. Strip query parameters and hash fragments (if any remain)
+  if (cleaned.includes("?")) {
+    cleaned = cleaned.split("?")[0];
+  }
+  if (cleaned.includes("#")) {
+    cleaned = cleaned.split("#")[0];
+  }
+
+  // 7. Remove leading and duplicate slashes
   cleaned = cleaned.replace(/^\/+/, "").replace(/\/+/g, "/");
 
-  // 7. Strip duplicate bucket prefix if present
+  // 8. Strip duplicate bucket prefix if present
   const activeBucket = getBucketName(bucketName);
   const prefixes = [
     activeBucket + "/",
@@ -233,10 +247,10 @@ export function sanitizeStoragePath(rawPath: string | null | undefined, bucketNa
   // Strip leading slashes again after prefix removal
   cleaned = cleaned.replace(/^\/+/, "");
 
-  // 8. Remove trailing slashes
+  // 9. Remove trailing slashes
   cleaned = cleaned.replace(/\/+$/, "");
 
-  // 9. Clean individual path segments
+  // 10. Clean individual path segments
   const segments = cleaned
     .split("/")
     .map((seg) => seg.trim())

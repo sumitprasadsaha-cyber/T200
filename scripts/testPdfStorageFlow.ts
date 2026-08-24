@@ -36,6 +36,8 @@ async function main() {
     key: objectPath,
   });
   assert.ok(getRes.body, "getRes.body should be present");
+  // Consume stream
+  for await (const _ of getRes.body) {}
 
   console.log("[PDF Flow Test] Step 4: Deleting test object from R2...");
   await deleteObjectFromR2({
@@ -44,6 +46,7 @@ async function main() {
   });
 
   console.log("[PDF Flow Test] PASS - Cloudflare R2 PDF Flow verified successfully.");
+  process.exit(0);
 }
 
 main().catch((err) => {

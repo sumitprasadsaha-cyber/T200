@@ -141,6 +141,8 @@ export async function uploadToR2(params: {
 
   console.log(`[R2Client] Initiating upload to Cloudflare R2: bucket="${bucket}", key="${cleanKey}", size=${params.file.size}`);
 
+  const errors: string[] = [];
+
   // Step 1: Upload directly via Same-Origin Backend API Proxy (/api/r2/upload)
   try {
     const proxyResult = await new Promise<R2UploadResult>((resolve, reject) => {
@@ -193,21 +195,22 @@ export async function uploadToR2(params: {
             } catch {
               // Keep default
             }
-            reject(new Error(`Cloudflare R2 Upload Failed: ${errDetail}`));
+            reject(new Error(`Binary Proxy: ${errDetail}`));
           }
         };
 
-        xhr.onerror = () => reject(new Error("Cloudflare R2 Upload Network Error"));
-        xhr.ontimeout = () => reject(new Error("Cloudflare R2 Upload Timeout"));
+        xhr.onerror = () => reject(new Error("Binary Proxy: Network Error"));
+        xhr.ontimeout = () => reject(new Error("Binary Proxy: Timeout"));
         xhr.send(params.file);
       } catch (err: any) {
-        reject(new Error(`Cloudflare R2 Upload Exception: ${err?.message || err}`));
+        reject(new Error(`Binary Proxy Exception: ${err?.message || err}`));
       }
     });
 
     return proxyResult;
   } catch (proxyError: any) {
-    console.warn("[R2Client] Binary proxy upload attempt encountered an issue, trying base64 fallback:", proxyError);
+    console.warn("[R2Client] Binary proxy upload attempt encountered an issue:", proxyError);
+    errors.push(proxyError?.message || String(proxyError));
   }
 
   // Step 2: Fallback to Base64 JSON Upload via Backend Proxy
@@ -245,9 +248,13 @@ export async function uploadToR2(params: {
         mimeType,
         etag: json.etag,
       };
+    } else {
+      const text = await res.text();
+      errors.push(`Base64 Proxy HTTP ${res.status}: ${text}`);
     }
-  } catch (base64Err) {
+  } catch (base64Err: any) {
     console.warn("[R2Client] Base64 fallback error:", base64Err);
+    errors.push(`Base64 Fallback: ${base64Err?.message || base64Err}`);
   }
 
   // Step 3: Presigned URL Fallback
@@ -271,8 +278,9 @@ export async function uploadToR2(params: {
         presignedPutUrl = json.signedUrl;
       }
     }
-  } catch (err) {
+  } catch (err: any) {
     console.warn("[R2Client] Presigned PUT URL negotiation error:", err);
+    errors.push(`Presigned Negotiation: ${err?.message || err}`);
   }
 
   if (presignedPutUrl) {
@@ -320,7 +328,8 @@ export async function uploadToR2(params: {
     }
   }
 
-  throw new Error("Cloudflare R2 Upload: All upload methods (Direct Proxy, Base64, and Presigned) failed.");
+  const detailedError = errors.length > 0 ? errors.join(" | ") : "Network or server connection failed.";
+  throw new Error(`Cloudflare R2 Upload Failed: ${detailedError}`);
 }
 
 /**
@@ -333,34 +342,37 @@ export async function downloadFromR2(params: {
   const bucket = getR2BucketName(params.bucket);
   const cleanKey = params.key.replace(/^\/+/, "");
 
-  // 1. Try signed URL or public URL
-  const viewUrl = await getR2SignedUrl({ bucket, key: cleanKey, expiresIn: 3600 });
+  // 1. Same-Origin /api/r2/download proxy endpoint (fast streaming, 0 CORS issues)
+  const proxyUrl = `/api/r2/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanKey)}`;
   try {
-    const res = await fetch(viewUrl);
-    if (res.ok) {
-      const blob = await res.blob();
+    const proxyRes = await fetch(proxyUrl);
+    if (proxyRes.ok) {
+      const blob = await proxyRes.blob();
       if (blob && blob.size > 0) {
-        return { blob, mimeType: res.headers.get("content-type") || "application/octet-stream" };
+        return {
+          blob,
+          mimeType: proxyRes.headers.get("content-type") || "application/octet-stream",
+        };
       }
     }
-  } catch (err) {
-    console.warn("[R2Client] Signed URL download failed, trying proxy endpoint:", err);
+  } catch (proxyErr) {
+    console.warn("[R2Client] Proxy download failed, trying signed URL:", proxyErr);
   }
 
-  // 2. Fallback to /api/r2/download proxy
-  const proxyUrl = `/api/r2/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(cleanKey)}`;
-  const proxyRes = await fetch(proxyUrl);
-  if (!proxyRes.ok) {
-    if (proxyRes.status === 404) {
+  // 2. Fallback to signed URL or public URL
+  const viewUrl = await getR2SignedUrl({ bucket, key: cleanKey, expiresIn: 3600 });
+  const res = await fetch(viewUrl);
+  if (!res.ok) {
+    if (res.status === 404) {
       throw new Error(`File not found in Cloudflare R2 (key: "${cleanKey}")`);
     }
-    throw new Error(`Cloudflare R2 download failed with status HTTP ${proxyRes.status}`);
+    throw new Error(`Cloudflare R2 download failed with status HTTP ${res.status}`);
   }
 
-  const blob = await proxyRes.blob();
+  const blob = await res.blob();
   return {
     blob,
-    mimeType: proxyRes.headers.get("content-type") || "application/octet-stream",
+    mimeType: res.headers.get("content-type") || "application/octet-stream",
   };
 }
 

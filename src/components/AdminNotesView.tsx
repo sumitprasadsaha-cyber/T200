@@ -134,6 +134,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
   const [previewPdf, setPreviewPdf] = useState<{
     url: string;
     title: string;
+    noteId?: string;
     storagePath?: string;
     bucket?: string;
     fileName?: string;
@@ -1282,10 +1283,14 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
                                               {/* View PDF */}
                                               <button
                                                 onClick={() => setPreviewPdf({
-                                                  url: note.pdfUrl,
+                                                  url: note.pdfUrl || "",
                                                   title: `[${note.classGrade}] ${note.subject} - Ch ${note.chapterNo}: ${note.chapterName}${note.partLabel ? ` (${note.partLabel})` : ""}`,
-                                                  storagePath: note.storagePath,
+                                                  noteId: note.id,
+                                                  storagePath: note.storagePath || note.pdfUrl,
                                                   bucket: note.bucket,
+                                                  fileName: note.fileName || note.pdfFileName || note.filename || `${note.chapterName || "Note"}.${note.fileType === "image" ? "png" : "pdf"}`,
+                                                  mimeType: note.mimeType || note.mime_type,
+                                                  fileType: note.fileType,
                                                 })}
                                                 className="p-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/60 border border-blue-200/50 dark:border-blue-800/40 transition-all cursor-pointer"
                                                 title="View PDF"
@@ -2168,6 +2173,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         <PdfViewer
           url={previewPdf.url}
           title={previewPdf.title}
+          noteId={previewPdf.noteId}
           onClose={() => setPreviewPdf(null)}
           storagePath={previewPdf.storagePath}
           bucket={previewPdf.bucket}
