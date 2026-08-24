@@ -25,7 +25,7 @@ import {
 import { ClassNote, Student } from "../types";
 import { uploadFileToSupabase, deleteFileFromStorage } from "../lib/storageService";
 import { saveClassNoteDoc, deleteClassNoteDoc } from "../lib/firestoreService";
-import { groupClassNotesHierarchy, normalizeClassGrade, isClassGradeMatching, isSubjectMatching } from "../utils/classNoteHelper";
+import { groupClassNotesHierarchy, normalizeClassGrade, isClassGradeMatching, isSubjectMatching, generateUPSCStoragePath, inferGSPaperFromSubject } from "../utils/classNoteHelper";
 import { getFormattedTopicLabel, isFileNameRedundant } from "../utils/chapterNotesHelper";
 import PdfViewer from "./PdfViewer";
 import { isImageFile } from "../lib/nativePdfService";
@@ -98,6 +98,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
   const [editingNote, setEditingNote] = useState<ClassNote | null>(null);
   const [editClass, setEditClass] = useState("");
   const [editSubject, setEditSubject] = useState("");
+  const [editGeneralStudiesPaper, setEditGeneralStudiesPaper] = useState("General Studies Paper I");
   const [editChapterNo, setEditChapterNo] = useState<number | "">(1);
   const [editChapterTitle, setEditChapterTitle] = useState("");
   const [editTopicNo, setEditTopicNo] = useState("");
@@ -150,6 +151,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
 
   // Accordion open/close state (collapsed by default)
   const [expandedClasses, setExpandedClasses] = useState<Record<string, boolean>>({});
+  const [expandedGSPapers, setExpandedGSPapers] = useState<Record<string, boolean>>({});
   const [expandedSubjects, setExpandedSubjects] = useState<Record<string, boolean>>({});
   const [expandedChapters, setExpandedChapters] = useState<Record<string, boolean>>({});
   const [, setTestUpdateVersion] = useState(0);
@@ -173,6 +175,19 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         return {};
       } else {
         return { [cls]: true };
+      }
+    });
+  };
+
+  const toggleGSPaperExpand = (gsKey: string) => {
+    setExpandedGSPapers((prev) => {
+      const isExpanded = !!prev[gsKey];
+      if (isExpanded) {
+        const next = { ...prev };
+        delete next[gsKey];
+        return next;
+      } else {
+        return { ...prev, [gsKey]: true };
       }
     });
   };
@@ -431,14 +446,30 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         : (isImg ? "jpg" : "pdf");
       if (!fileExtension) fileExtension = isImg ? "jpg" : "pdf";
 
-      // Rename uploaded document or image to topic as filled during its upload
+      let uploadPath = "";
       let renamedFileName = pdfFile.name;
-      if (cleanPartLabel) {
-        const hasExtension = cleanPartLabel.toLowerCase().endsWith(`.${fileExtension.toLowerCase()}`);
-        renamedFileName = hasExtension ? cleanPartLabel : `${cleanPartLabel}.${fileExtension}`;
+
+      if (isUPSCClass) {
+        const upscPathInfo = generateUPSCStoragePath(
+          generalStudiesPaper.trim(),
+          finalSubject,
+          Number(chapterNo),
+          chapterTitle.trim(),
+          cleanTopicNo,
+          cleanTopicName,
+          pdfFile.name,
+          fileExtension
+        );
+        uploadPath = upscPathInfo.storagePath;
+        renamedFileName = upscPathInfo.fileName;
+      } else {
+        if (cleanPartLabel) {
+          const hasExtension = cleanPartLabel.toLowerCase().endsWith(`.${fileExtension.toLowerCase()}`);
+          renamedFileName = hasExtension ? cleanPartLabel : `${cleanPartLabel}.${fileExtension}`;
+        }
+        uploadPath = `class_notes/${normalizeClassGrade(finalClass).replace(/\s+/g, "_")}/${finalSubject.replace(/\s+/g, "_")}/${Date.now()}_${renamedFileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
       }
 
-      const uploadPath = `class_notes/${normalizeClassGrade(finalClass).replace(/\s+/g, "_")}/${finalSubject.replace(/\s+/g, "_")}/${Date.now()}_${renamedFileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
       const uploadRes = await uploadFileToSupabase(
         "academy-connect-files",
         uploadPath,
@@ -450,6 +481,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
 
       const mime = pdfFile.type || (isImg ? "image/jpeg" : "application/pdf");
       const fType: "pdf" | "image" = isImg ? "image" : "pdf";
+      const nowIso = new Date().toISOString();
 
       const newNote: ClassNote = {
         id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -457,17 +489,30 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         subject: finalSubject,
         chapterNo: Number(chapterNo),
         chapterName: chapterTitle.trim(),
+        moduleNo: isUPSCClass ? Number(chapterNo) : undefined,
+        moduleName: isUPSCClass ? chapterTitle.trim() : undefined,
+        module_number: isUPSCClass ? Number(chapterNo) : undefined,
+        module_name: isUPSCClass ? chapterTitle.trim() : undefined,
         generalStudiesPaper: isUPSCClass ? generalStudiesPaper.trim() : undefined,
+        gs_paper: isUPSCClass ? generalStudiesPaper.trim() : undefined,
         partLabel: cleanPartLabel ? cleanPartLabel : undefined,
         topicNo: cleanTopicNo ? cleanTopicNo : undefined,
         topicName: cleanTopicName ? cleanTopicName : undefined,
+        topic_number: isUPSCClass && cleanTopicNo ? cleanTopicNo : undefined,
+        topic_name: isUPSCClass && cleanTopicName ? cleanTopicName : undefined,
         pdfUrl: uploadRes.downloadUrl,
         pdfFileName: renamedFileName,
+        fileName: renamedFileName,
+        filename: renamedFileName,
         storagePath: uploadRes.storagePath,
+        storage_path: uploadRes.storagePath,
         bucket: uploadRes.bucket,
         fileType: fType,
         mimeType: mime,
-        createdAt: new Date().toISOString(),
+        mime_type: mime,
+        createdAt: nowIso,
+        uploadedAt: nowIso,
+        uploaded_at: nowIso,
         uploadedBy: "Admin",
       };
 
@@ -477,6 +522,10 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
       const newSubjKey = `${newNote.classGrade}_${newNote.subject}`;
       const newChKey = `${newNote.classGrade}_${newNote.subject}_Ch${newNote.chapterNo}_${newNote.chapterName}`;
 
+      if (isUPSCClass) {
+        const gsKey = `UPSC_${generalStudiesPaper.trim()}`;
+        setExpandedGSPapers((prev) => ({ ...prev, [gsKey]: true }));
+      }
       setExpandedClasses({ [newClsKey]: true });
       setExpandedSubjects({ [newSubjKey]: true });
       setExpandedChapters({ [newChKey]: true });
@@ -512,6 +561,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
     setEditingNote(note);
     setEditClass(note.classGrade);
     setEditSubject(note.subject);
+    setEditGeneralStudiesPaper(note.generalStudiesPaper || (note as any).gs_paper || inferGSPaperFromSubject(note.subject) || "General Studies Paper I");
     setEditChapterNo(note.chapterNo);
     setEditChapterTitle(note.chapterName);
     setEditTopicNo(note.topicNo !== undefined ? String(note.topicNo) : "");
@@ -529,6 +579,7 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
 
     setIsEditSaving(true);
     try {
+      const isEditUPSC = normalizeClassGrade(editClass.trim()) === "UPSC";
       const cleanTopicNo = editTopicNo.trim();
       const cleanTopicName = editTopicName.trim();
       let computedLabel = "";
@@ -559,16 +610,30 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         subject: editSubject.trim(),
         chapterNo: Number(editChapterNo),
         chapterName: editChapterTitle.trim(),
+        moduleNo: isEditUPSC ? Number(editChapterNo) : undefined,
+        moduleName: isEditUPSC ? editChapterTitle.trim() : undefined,
+        module_number: isEditUPSC ? Number(editChapterNo) : undefined,
+        module_name: isEditUPSC ? editChapterTitle.trim() : undefined,
+        generalStudiesPaper: isEditUPSC ? editGeneralStudiesPaper.trim() : undefined,
+        gs_paper: isEditUPSC ? editGeneralStudiesPaper.trim() : undefined,
         partLabel: cleanPartLabel ? cleanPartLabel : undefined,
         topicNo: cleanTopicNo ? cleanTopicNo : undefined,
         topicName: cleanTopicName ? cleanTopicName : undefined,
+        topic_number: isEditUPSC && cleanTopicNo ? cleanTopicNo : undefined,
+        topic_name: isEditUPSC && cleanTopicName ? cleanTopicName : undefined,
         pdfFileName: updatedFileName,
+        fileName: updatedFileName,
+        filename: updatedFileName,
       };
 
       const newClsKey = updatedNote.classGrade;
       const newSubjKey = `${updatedNote.classGrade}_${updatedNote.subject}`;
       const newChKey = `${updatedNote.classGrade}_${updatedNote.subject}_Ch${updatedNote.chapterNo}_${updatedNote.chapterName}`;
 
+      if (isEditUPSC) {
+        const gsKey = `UPSC_${editGeneralStudiesPaper.trim()}`;
+        setExpandedGSPapers((prev) => ({ ...prev, [gsKey]: true }));
+      }
       setExpandedClasses((prev) => ({ ...prev, [newClsKey]: true }));
       setExpandedSubjects((prev) => ({ ...prev, [newSubjKey]: true }));
       setExpandedChapters((prev) => ({ ...prev, [newChKey]: true }));
@@ -608,19 +673,38 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
       }
 
       // 2. Upload new file
+      const isUPSC = normalizeClassGrade(replaceNote.classGrade) === "UPSC";
       const cleanPartLabel = (replaceNote.partLabel || "").trim();
       let fileExtension = replaceFile.name.includes(".")
         ? replaceFile.name.split(".").pop()
         : (isImg ? "jpg" : "pdf");
       if (!fileExtension) fileExtension = isImg ? "jpg" : "pdf";
 
+      let uploadPath = "";
       let renamedFileName = replaceFile.name;
-      if (cleanPartLabel) {
-        const hasExtension = cleanPartLabel.toLowerCase().endsWith(`.${fileExtension.toLowerCase()}`);
-        renamedFileName = hasExtension ? cleanPartLabel : `${cleanPartLabel}.${fileExtension}`;
+
+      if (isUPSC) {
+        const gsPaper = replaceNote.generalStudiesPaper || (replaceNote as any).gs_paper || inferGSPaperFromSubject(replaceNote.subject);
+        const upscPathInfo = generateUPSCStoragePath(
+          gsPaper,
+          replaceNote.subject,
+          replaceNote.chapterNo,
+          replaceNote.chapterName,
+          replaceNote.topicNo,
+          replaceNote.topicName,
+          replaceFile.name,
+          fileExtension
+        );
+        uploadPath = upscPathInfo.storagePath;
+        renamedFileName = upscPathInfo.fileName;
+      } else {
+        if (cleanPartLabel) {
+          const hasExtension = cleanPartLabel.toLowerCase().endsWith(`.${fileExtension.toLowerCase()}`);
+          renamedFileName = hasExtension ? cleanPartLabel : `${cleanPartLabel}.${fileExtension}`;
+        }
+        uploadPath = `class_notes/${normalizeClassGrade(replaceNote.classGrade).replace(/\s+/g, "_")}/${replaceNote.subject.replace(/\s+/g, "_")}/${Date.now()}_${renamedFileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
       }
 
-      const uploadPath = `class_notes/${normalizeClassGrade(replaceNote.classGrade).replace(/\s+/g, "_")}/${replaceNote.subject.replace(/\s+/g, "_")}/${Date.now()}_${renamedFileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
       const uploadRes = await uploadFileToSupabase(
         "academy-connect-files",
         uploadPath,
@@ -637,11 +721,17 @@ export default function AdminNotesView({ notes, students = [], onRefresh }: Admi
         ...replaceNote,
         pdfUrl: uploadRes.downloadUrl,
         pdfFileName: renamedFileName,
+        fileName: renamedFileName,
+        filename: renamedFileName,
         storagePath: uploadRes.storagePath,
+        storage_path: uploadRes.storagePath,
         bucket: uploadRes.bucket,
         fileType: fType,
         mimeType: mime,
+        mime_type: mime,
         createdAt: new Date().toISOString(),
+        uploadedAt: new Date().toISOString(),
+        uploaded_at: new Date().toISOString(),
       };
 
       await saveClassNoteDoc(updatedNote);

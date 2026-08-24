@@ -1,20 +1,33 @@
 export interface ClassNote {
   id: string;
-  classGrade: string; // e.g. "Class 6", "Class 7", "Class 8", "Class 9", "Class 10"
-  subject: string; // e.g. "Mathematics", "Science", "English", "Computer Science", "Indian Heritage and Culture", "Economics"
+  classGrade: string; // e.g. "Class 6", "Class 7", "Class 8", "Class 9", "Class 10", "UPSC"
+  subject: string; // e.g. "Mathematics", "Science", "English", "Polity", "International Relations"
   chapterNo: number;
   chapterName: string;
+  moduleNo?: number; // alias for UPSC module_number
+  moduleName?: string; // alias for UPSC module_name
+  module_number?: number; // exact UPSC metadata specification
+  module_name?: string; // exact UPSC metadata specification
   generalStudiesPaper?: string; // e.g. "General Studies Paper I", "General Studies Paper II", "General Studies Paper III", "General Studies Paper IV", "Essay", "CSAT" (UPSC only)
+  gs_paper?: string; // exact UPSC metadata specification
   partLabel?: string; // e.g. "Topic 1", "Topic 2", or legacy part label
   topicNo?: number | string; // e.g. 1, 2, "1.1"
   topicName?: string; // e.g. "Introduction"
+  topic_number?: number | string; // exact UPSC metadata specification
+  topic_name?: string; // exact UPSC metadata specification
   pdfUrl: string;
   pdfFileName: string;
+  fileName?: string;
+  filename?: string; // exact UPSC metadata specification
   storagePath?: string;
+  storage_path?: string; // exact UPSC metadata specification
   bucket?: string;
   fileType?: "pdf" | "image";
   mimeType?: string;
+  mime_type?: string; // exact UPSC metadata specification
   createdAt: string;
+  uploadedAt?: string;
+  uploaded_at?: string; // exact UPSC metadata specification
   updatedAt?: string;
   uploadedBy?: string;
 
@@ -30,10 +43,17 @@ export interface ChapterNote {
   subject?: string;
   chapterNo: number; // Only number!
   chapterName: string; // Chapter name
+  moduleNo?: number;
+  moduleName?: string;
+  module_number?: number;
+  module_name?: string;
   generalStudiesPaper?: string; // e.g. "General Studies Paper I", "General Studies Paper II", "General Studies Paper III", "General Studies Paper IV", "Essay", "CSAT" (UPSC only)
+  gs_paper?: string;
   partLabel?: string; // Optional part label or legacy part label
   topicNo?: number | string; // e.g. 1, 2
   topicName?: string; // e.g. "Introduction"
+  topic_number?: number | string;
+  topic_name?: string;
   pdfUrl: string; // Base64 PDF content or URL
   pdfFileName: string; // Original PDF filename
   isCompleted?: boolean; // For tracking revision progress
@@ -49,11 +69,15 @@ export interface ChapterNote {
   storageProvider?: "supabase";
   bucket?: string;
   storagePath?: string;
+  storage_path?: string;
   fileName?: string;
+  filename?: string;
   fileSize?: number;
   mimeType?: string;
+  mime_type?: string;
   fileType?: "pdf" | "image";
   uploadedAt?: string;
+  uploaded_at?: string;
   uploadedBy?: string;
   downloadUrl?: string;
 }

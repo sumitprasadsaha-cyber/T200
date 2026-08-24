@@ -204,42 +204,146 @@ export interface GroupedSubjectChapters {
   chapters: GroupedChapterParts[];
 }
 
+export interface GroupedGSPaperSubjects {
+  gsPaper: string;
+  subjects: GroupedSubjectChapters[];
+}
+
 export interface GroupedClassNotes {
   classGrade: string;
   subjects: GroupedSubjectChapters[];
+  gsPapers?: GroupedGSPaperSubjects[];
+}
+
+/**
+ * Standard UPSC General Studies Papers in canonical order.
+ */
+export const UPSC_GS_PAPERS_CANONICAL = [
+  "General Studies Paper I",
+  "General Studies Paper II",
+  "General Studies Paper III",
+  "General Studies Paper IV",
+  "Essay",
+  "CSAT"
+];
+
+export function getGSPaperSortIndex(paper: string): number {
+  const norm = (paper || "").toLowerCase().trim();
+  if (norm.includes("paper i") && !norm.includes("paper ii") && !norm.includes("paper iii") && !norm.includes("paper iv")) return 1;
+  if (norm.includes("paper ii") && !norm.includes("paper iii")) return 2;
+  if (norm.includes("paper iii")) return 3;
+  if (norm.includes("paper iv")) return 4;
+  if (norm.includes("essay")) return 5;
+  if (norm.includes("csat")) return 6;
+  return 99;
+}
+
+export function inferGSPaperFromSubject(subject?: string): string {
+  if (!subject) return "General Studies Paper I";
+  const s = subject.toLowerCase().trim();
+  if (s.includes("ethics")) return "General Studies Paper IV";
+  if (s.includes("polity") || s.includes("governance") || s.includes("international relations") || s.includes("ir") || s.includes("constitution")) return "General Studies Paper II";
+  if (s.includes("economy") || s.includes("economics") || s.includes("environment") || s.includes("ecology") || s.includes("science") || s.includes("tech")) return "General Studies Paper III";
+  if (s.includes("history") || s.includes("geography") || s.includes("heritage") || s.includes("culture") || s.includes("society")) return "General Studies Paper I";
+  if (s.includes("essay")) return "Essay";
+  if (s.includes("csat") || s.includes("aptitude") || s.includes("reasoning")) return "CSAT";
+  return "General Studies Paper I";
+}
+
+/**
+ * Sanitize folder and file names by replacing spaces with _ and removing invalid filesystem characters.
+ */
+export function sanitizeUPSCPathSegment(segment: string): string {
+  if (!segment) return "";
+  return segment
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+/**
+ * Format GS Paper into a canonical storage folder name e.g. "GS_Paper_II".
+ */
+export function formatGSPaperFolderName(gsPaper: string): string {
+  const clean = (gsPaper || "General Studies Paper I").trim();
+  const romanMap: Record<string, string> = { "1": "I", "2": "II", "3": "III", "4": "IV" };
+  const m = clean.match(/^(?:General\s+Studies\s+Paper|GS\s+Paper|Paper)\s*([IVXivx\d]+)/i);
+  if (m) {
+    const numOrRoman = m[1].toUpperCase();
+    const roman = romanMap[numOrRoman] || numOrRoman;
+    return `GS_Paper_${roman}`;
+  }
+  if (/^essay$/i.test(clean)) return "Essay";
+  if (/^csat$/i.test(clean)) return "CSAT";
+  return sanitizeUPSCPathSegment(clean.replace(/^General\s+Studies\s+Paper/i, "GS_Paper")) || "GS_Paper_I";
+}
+
+/**
+ * Generate UPSC Supabase Storage Path adhering strictly to:
+ * UPSC/{gs_paper}/{subject}/Module_{module_number}_{module_name}/Topic_{topic_number}_{topic_name}.{extension}
+ */
+export function generateUPSCStoragePath(
+  gsPaper: string,
+  subject: string,
+  moduleNo: number | string,
+  moduleName: string,
+  topicNo?: number | string,
+  topicName?: string,
+  originalFileName?: string,
+  extension?: string
+): { storagePath: string; fileName: string } {
+  const gsFolder = formatGSPaperFolderName(gsPaper);
+  const subjFolder = sanitizeUPSCPathSegment(subject) || "General_Studies";
+  
+  const mNo = Number(moduleNo) || 1;
+  const mName = sanitizeUPSCPathSegment(moduleName) || `Module_${mNo}`;
+  const moduleFolder = `Module_${mNo}_${mName}`;
+
+  let ext = (extension || "").replace(/^\./, "").toLowerCase();
+  if (!ext && originalFileName && originalFileName.includes(".")) {
+    ext = originalFileName.split(".").pop()!.toLowerCase();
+  }
+  if (!ext) ext = "pdf";
+
+  const tNo = topicNo !== undefined && topicNo !== "" ? topicNo : 1;
+  let tName = topicName ? sanitizeUPSCPathSegment(topicName) : "";
+  if (!tName && originalFileName) {
+    const nameWithoutExt = originalFileName.replace(/\.[^/.]+$/, "");
+    tName = sanitizeUPSCPathSegment(nameWithoutExt);
+  }
+  if (!tName) {
+    tName = mName;
+  }
+
+  const fileName = `Topic_${tNo}_${tName}.${ext}`;
+  const storagePath = `UPSC/${gsFolder}/${subjFolder}/${moduleFolder}/${fileName}`.replace(/\/+/g, "/");
+
+  return { storagePath, fileName };
 }
 
 /**
  * Group ClassNotes into Class -> Subject -> Chapter -> Parts hierarchy.
+ * For UPSC only: groups into UPSC -> General Studies Paper -> Subject -> Module -> Topic.
  */
 export function groupClassNotesHierarchy(notes: ClassNote[]): GroupedClassNotes[] {
-  const classMap = new Map<string, Map<string, Map<string, ClassNote[]>>>();
+  const classMap = new Map<string, ClassNote[]>();
 
   for (const note of notes) {
     const normalizedClass = normalizeClassGrade(note.classGrade);
-    const subject = note.subject.trim();
-    const chapterKey = `${note.chapterNo}:::${note.chapterName.trim()}`;
-
     if (!classMap.has(normalizedClass)) {
-      classMap.set(normalizedClass, new Map());
+      classMap.set(normalizedClass, []);
     }
-    const subjectMap = classMap.get(normalizedClass)!;
-
-    if (!subjectMap.has(subject)) {
-      subjectMap.set(subject, new Map());
-    }
-    const chapterMap = subjectMap.get(subject)!;
-
-    if (!chapterMap.has(chapterKey)) {
-      chapterMap.set(chapterKey, []);
-    }
-    chapterMap.get(chapterKey)!.push(note);
+    classMap.get(normalizedClass)!.push(note);
   }
 
   const result: GroupedClassNotes[] = [];
 
-  // Sort classes numerical order e.g. Class 6, Class 7, Class 8, Class 9, Class 10...
+  // Sort classes numerical order e.g. Class 6, Class 7, Class 8, Class 9, Class 10... and UPSC
   const sortedClasses = Array.from(classMap.keys()).sort((a, b) => {
+    if (a === "UPSC") return 1;
+    if (b === "UPSC") return -1;
     const numA = parseInt(a.replace(/\D/g, ""), 10) || 999;
     const numB = parseInt(b.replace(/\D/g, ""), 10) || 999;
     if (numA !== numB) return numA - numB;
@@ -247,57 +351,188 @@ export function groupClassNotesHierarchy(notes: ClassNote[]): GroupedClassNotes[
   });
 
   for (const cls of sortedClasses) {
-    const subjectMap = classMap.get(cls)!;
-    const sortedSubjects = Array.from(subjectMap.keys()).sort((a, b) => a.localeCompare(b));
-    const subjectGroups: GroupedSubjectChapters[] = [];
+    const classNotes = classMap.get(cls) || [];
 
-    for (const subj of sortedSubjects) {
-      const chapterMap = subjectMap.get(subj)!;
-      const chapterGroups: GroupedChapterParts[] = [];
+    if (cls === "UPSC") {
+      // ----------------------------------------------------
+      // UPSC HIERARCHY: UPSC -> GS Paper -> Subject -> Module -> Topics
+      // ----------------------------------------------------
+      const gsPaperMap = new Map<string, Map<string, Map<string, ClassNote[]>>>();
 
-      const sortedChapterKeys = Array.from(chapterMap.keys()).sort((a, b) => {
-        const [chNoA] = a.split(":::");
-        const [chNoB] = b.split(":::");
-        return (parseInt(chNoA, 10) || 0) - (parseInt(chNoB, 10) || 0);
+      for (const note of classNotes) {
+        const gsPaper = (note.generalStudiesPaper || (note as any).gs_paper || inferGSPaperFromSubject(note.subject) || "General Studies Paper I").trim();
+        const subject = note.subject.trim();
+        const chapterNo = note.chapterNo || (note as any).moduleNo || (note as any).module_number || 1;
+        const chapterName = (note.chapterName || (note as any).moduleName || (note as any).module_name || `Module ${chapterNo}`).trim();
+        const moduleKey = `${chapterNo}:::${chapterName}`;
+
+        if (!gsPaperMap.has(gsPaper)) {
+          gsPaperMap.set(gsPaper, new Map());
+        }
+        const subjMap = gsPaperMap.get(gsPaper)!;
+
+        if (!subjMap.has(subject)) {
+          subjMap.set(subject, new Map());
+        }
+        const modMap = subjMap.get(subject)!;
+
+        if (!modMap.has(moduleKey)) {
+          modMap.set(moduleKey, []);
+        }
+        modMap.get(moduleKey)!.push(note);
+      }
+
+      // Sort GS Papers in canonical order
+      const sortedGSPapers = Array.from(gsPaperMap.keys()).sort((a, b) => {
+        const idxA = getGSPaperSortIndex(a);
+        const idxB = getGSPaperSortIndex(b);
+        if (idxA !== idxB) return idxA - idxB;
+        return a.localeCompare(b);
       });
 
-      for (const chKey of sortedChapterKeys) {
-        const [chNoStr, chName] = chKey.split(":::");
-        const chapterNo = parseInt(chNoStr, 10) || 0;
-        const parts = chapterMap.get(chKey)!;
-        
-        if (!parts || parts.length === 0) continue;
+      const gsPaperGroups: GroupedGSPaperSubjects[] = [];
+      const aggregatedSubjectGroups: GroupedSubjectChapters[] = [];
 
-        // Sort parts if partLabel exists, e.g. Part 1, Part 2
-        parts.sort((p1, p2) => {
-          const l1 = (p1.partLabel || "").toLowerCase();
-          const l2 = (p2.partLabel || "").toLowerCase();
-          if (!l1 && !l2) return 0;
-          if (!l1) return -1;
-          if (!l2) return 1;
-          return l1.localeCompare(l2, undefined, { numeric: true });
-        });
+      for (const gsPaper of sortedGSPapers) {
+        const subjMap = gsPaperMap.get(gsPaper)!;
+        const sortedSubjects = Array.from(subjMap.keys()).sort((a, b) => a.localeCompare(b));
+        const gsSubjectGroups: GroupedSubjectChapters[] = [];
 
-        chapterGroups.push({
-          chapterNo,
-          chapterName: chName || `Chapter ${chapterNo}`,
-          parts,
-        });
+        for (const subj of sortedSubjects) {
+          const modMap = subjMap.get(subj)!;
+          const moduleGroups: GroupedChapterParts[] = [];
+
+          const sortedModKeys = Array.from(modMap.keys()).sort((a, b) => {
+            const [mNoA] = a.split(":::");
+            const [mNoB] = b.split(":::");
+            return (parseInt(mNoA, 10) || 0) - (parseInt(mNoB, 10) || 0);
+          });
+
+          for (const mKey of sortedModKeys) {
+            const [mNoStr, mName] = mKey.split(":::");
+            const moduleNo = parseInt(mNoStr, 10) || 0;
+            const parts = modMap.get(mKey)!;
+
+            if (!parts || parts.length === 0) continue;
+
+            // Sort topics numerically / alphabetically
+            parts.sort((p1, p2) => {
+              const t1 = p1.topicNo !== undefined ? Number(p1.topicNo) : undefined;
+              const t2 = p2.topicNo !== undefined ? Number(p2.topicNo) : undefined;
+              if (t1 !== undefined && t2 !== undefined && !isNaN(t1) && !isNaN(t2)) {
+                return t1 - t2;
+              }
+              const l1 = (p1.partLabel || p1.topicName || "").toLowerCase();
+              const l2 = (p2.partLabel || p2.topicName || "").toLowerCase();
+              if (!l1 && !l2) return 0;
+              if (!l1) return -1;
+              if (!l2) return 1;
+              return l1.localeCompare(l2, undefined, { numeric: true });
+            });
+
+            moduleGroups.push({
+              chapterNo: moduleNo,
+              chapterName: mName || `Module ${moduleNo}`,
+              parts,
+            });
+          }
+
+          if (moduleGroups.length > 0) {
+            const subjObj: GroupedSubjectChapters = {
+              subject: subj,
+              chapters: moduleGroups,
+            };
+            gsSubjectGroups.push(subjObj);
+            aggregatedSubjectGroups.push(subjObj);
+          }
+        }
+
+        if (gsSubjectGroups.length > 0) {
+          gsPaperGroups.push({
+            gsPaper,
+            subjects: gsSubjectGroups,
+          });
+        }
       }
 
-      if (chapterGroups.length > 0) {
-        subjectGroups.push({
-          subject: subj,
-          chapters: chapterGroups,
-        });
-      }
-    }
-
-    if (subjectGroups.length > 0) {
       result.push({
-        classGrade: cls,
-        subjects: subjectGroups,
+        classGrade: "UPSC",
+        subjects: aggregatedSubjectGroups,
+        gsPapers: gsPaperGroups,
       });
+
+    } else {
+      // ----------------------------------------------------
+      // CLASSES 1–12 HIERARCHY: Class -> Subject -> Chapter -> Topics (Unchanged)
+      // ----------------------------------------------------
+      const subjectMap = new Map<string, Map<string, ClassNote[]>>();
+
+      for (const note of classNotes) {
+        const subject = note.subject.trim();
+        const chapterKey = `${note.chapterNo}:::${note.chapterName.trim()}`;
+
+        if (!subjectMap.has(subject)) {
+          subjectMap.set(subject, new Map());
+        }
+        const chapterMap = subjectMap.get(subject)!;
+
+        if (!chapterMap.has(chapterKey)) {
+          chapterMap.set(chapterKey, []);
+        }
+        chapterMap.get(chapterKey)!.push(note);
+      }
+
+      const sortedSubjects = Array.from(subjectMap.keys()).sort((a, b) => a.localeCompare(b));
+      const subjectGroups: GroupedSubjectChapters[] = [];
+
+      for (const subj of sortedSubjects) {
+        const chapterMap = subjectMap.get(subj)!;
+        const chapterGroups: GroupedChapterParts[] = [];
+
+        const sortedChapterKeys = Array.from(chapterMap.keys()).sort((a, b) => {
+          const [chNoA] = a.split(":::");
+          const [chNoB] = b.split(":::");
+          return (parseInt(chNoA, 10) || 0) - (parseInt(chNoB, 10) || 0);
+        });
+
+        for (const chKey of sortedChapterKeys) {
+          const [chNoStr, chName] = chKey.split(":::");
+          const chapterNo = parseInt(chNoStr, 10) || 0;
+          const parts = chapterMap.get(chKey)!;
+          
+          if (!parts || parts.length === 0) continue;
+
+          // Sort parts if partLabel exists, e.g. Part 1, Part 2
+          parts.sort((p1, p2) => {
+            const l1 = (p1.partLabel || "").toLowerCase();
+            const l2 = (p2.partLabel || "").toLowerCase();
+            if (!l1 && !l2) return 0;
+            if (!l1) return -1;
+            if (!l2) return 1;
+            return l1.localeCompare(l2, undefined, { numeric: true });
+          });
+
+          chapterGroups.push({
+            chapterNo,
+            chapterName: chName || `Chapter ${chapterNo}`,
+            parts,
+          });
+        }
+
+        if (chapterGroups.length > 0) {
+          subjectGroups.push({
+            subject: subj,
+            chapters: chapterGroups,
+          });
+        }
+      }
+
+      if (subjectGroups.length > 0) {
+        result.push({
+          classGrade: cls,
+          subjects: subjectGroups,
+        });
+      }
     }
   }
 
